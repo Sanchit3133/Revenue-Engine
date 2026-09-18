@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width, initial-scale=1.0"
+    >
+
+    <title>Business Consultation | Revenue Engine</title>
+
+    <style>
+        * {
+            box-sizing: border-box;
+        }
+
+        body {
+            margin: 0;
+            padding: 0;
+            font-family:
+                -apple-system,
+                BlinkMacSystemFont,
+                "Segoe UI",
+                sans-serif;
+            background: #f5f7fb;
+            color: #172033;
+        }
+
+        .container {
+            width: min(900px, calc(100% - 32px));
+            margin: 50px auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 18px;
+            padding: 36px;
+            box-shadow:
+                0 10px 35px rgba(0, 0, 0, 0.08);
+        }
+
+        h1 {
+            margin-top: 0;
+            font-size: 34px;
+            line-height: 1.2;
+        }
+
+        h2 {
+            margin-top: 0;
+            font-size: 24px;
+        }
+
+        p {
+            line-height: 1.7;
+        }
+
+        .intro {
+            color: #596579;
+            font-size: 17px;
+        }
+
+        .progress {
+            margin: 25px 0 35px;
+            height: 8px;
+            background: #e8ecf3;
+            border-radius: 999px;
+            overflow: hidden;
+        }
+
+        .progress-bar {
+            height: 100%;
+            width: 25%;
+            background: #172033;
+            border-radius: 999px;
+        }
+
+        .field {
+            margin-bottom: 22px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+        }
+
+        input,
+        textarea {
+            width: 100%;
+            border: 1px solid #d7dce5;
+            border-radius: 10px;
+            padding: 13px 14px;
+            font-size: 16px;
+            font-family: inherit;
+        }
+
+        textarea {
+            min-height: 130px;
+            resize: vertical;
+        }
+
+        input:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #172033;
+        }
+
+        .button {
+            display: inline-block;
+            border: 0;
+            border-radius: 10px;
+            padding: 14px 22px;
+            background: #172033;
+            color: white;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .button:hover {
+            opacity: 0.92;
+        }
+
+        .button-secondary {
+            background: #eef1f6;
+            color: #172033;
+        }
+
+        .error {
+            margin-bottom: 25px;
+            padding: 14px 16px;
+            border-radius: 10px;
+            background: #fff0f0;
+            color: #9b1c1c;
+        }
+
+        .assessment {
+            margin-top: 30px;
+            padding: 24px;
+            border-radius: 14px;
+            background: #f7f8fb;
+        }
+
+        .assessment-text {
+            white-space: pre-wrap;
+            line-height: 1.7;
+        }
+
+        .explanation {
+            margin-top: 20px;
+            padding: 20px;
+            border-left: 4px solid #172033;
+            background: #f1f3f7;
+        }
+
+        .gate {
+            margin-top: 25px;
+            padding: 18px;
+            border-radius: 12px;
+            background: #fff8e8;
+        }
+
+        .choice-row {
+            display: flex;
+            gap: 12px;
+            margin-top: 18px;
+        }
+
+        .choice-row form {
+            margin: 0;
+        }
+
+        .small {
+            font-size: 14px;
+            color: #697386;
+        }
+
+        .restart {
+            margin-top: 30px;
+        }
+
+        @media (max-width: 650px) {
+            .container {
+                width: min(
+                    100% - 20px,
+                    900px
+                );
+                margin: 20px auto;
+            }
+
+            .card {
+                padding: 24px;
+            }
+
+            h1 {
+                font-size: 28px;
+            }
+
+            .choice-row {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+
+<body>
+
+<div class="container">
+
+    <div class="card">
+
+        {% if not data.business_name %}
+
+            <h1>
+                Let's understand your business first.
+            </h1>
+
+            <p class="intro">
+                This consultation is designed to understand
+                how your current process works before suggesting
+                an implementation.
+            </p>
+
+            <div class="progress">
+                <div class="progress-bar"></div>
+            </div>
+
+            {% if error %}
+                <div class="error">
+                    {{ error }}
+                </div>
+            {% endif %}
+
+            <form method="POST">
+
+                <input
+                    type="hidden"
+                    name="action"
+                    value="business_details"
+                >
+
+                <div class="field">
+                    <label>
+                        Business / Institute Name *
+                    </label>
+
+                    <input
+                        type="text"
+                        name="business_name"
+                        required
+                    >
+                </div>
+
+                <div class="field">
+                    <label>
+                        What does your business do? *
+                    </label>
+
+                    <input
+                        type="text"
+                        name="business_type"
+                        required
+                    >
+                </div>
+
+                <div class="field">
+                    <label>
+                        Website
+                    </label>
+
+                    <input
+                        type="url"
+                        name="website"
+                        placeholder="https://example.com"
+                    >
+                </div>
+
+                <div class="field">
+                    <label>
+                        How do customers or enquiries
+                        currently reach you?
+                    </label>
+
+                    <textarea
+                        name="customer_process"
+                        placeholder="For example: website forms, WhatsApp, phone calls, Instagram, advertisements..."
+                    ></textarea>
+                </div>
+
+                <div class="field">
+                    <label>
+                        What is the biggest problem
+                        you are currently facing? *
+                    </label>
+
+                    <textarea
+                        name="biggest_problem"
+                        required
+                        placeholder="Describe the problem in your own words."
+                    ></textarea>
+                </div>
+
+                <div class="field">
+                    <label>
+                        What tools or systems are you
+                        currently using?
+                    </label>
+
+                    <textarea
+                        name="current_tools"
+                        placeholder="For example: WhatsApp, CRM, spreadsheets, payment gateway, website..."
+                    ></textarea>
+                </div>
+
+                <button class="button" type="submit">
+                    Continue consultation →
+                </button>
+
+            </form>
+
+        {% else %}
+
+            <h1>
+                Business consultation
+            </h1>
+
+            <p class="intro">
+                Thanks, {{ data.business_name }}.
+                We'll look at how your current process works
+                before discussing an implementation.
+            </p>
+
+            {% if error %}
+                <div class="error">
+                    {{ error }}
+                </div>
+            {% endif %}
+
+            {% if question %}
+
+                <div class="progress">
+                    <div class="progress-bar"></div>
+                </div>
+
+                <h2>
+                    {{ question }}
+                </h2>
+
+                <p class="small">
+                    There is no need to give a perfect answer.
+                    Explain how you currently handle this.
+                </p>
+
+                <form method="POST">
+
+                    <input
+                        type="hidden"
+                        name="action"
+                        value="answer"
+                    >
+
+                    <div class="field">
+                        <textarea
+                            name="answer"
+                            required
+                            placeholder="Your answer..."
+                        ></textarea>
+                    </div>
+
+                    <button
+                        class="button"
+                        type="submit"
+                    >
+                        Continue →
+                    </button>
+
+                </form>
+
+            {% else %}
+
+                {% if result %}
+
+                    <div class="assessment">
+
+                        <h2>
+                            Initial assessment
+                        </h2>
+
+                        <div class="assessment-text">
+                            {{ result.analysis }}
+                        </div>
+
+                        {% if explanation %}
+                            <div class="explanation">
+                                <strong>
+                                    What this type of solution does
+                                </strong>
+
+                                <p>
+                                    {{ explanation }}
+                                </p>
+                            </div>
+                        {% endif %}
+
+                    </div>
+
+                    {% if not data.implementation_interest %}
+
+                        <div class="gate">
+
+                            <strong>
+                                Would you like to explore
+                                implementing this?
+                            </strong>
+
+                            <div class="choice-row">
+
+                                <form method="POST">
+                                    <input
+                                        type="hidden"
+                                        name="action"
+                                        value="implementation_interest"
+                                    >
+
+                                    <input
+                                        type="hidden"
+                                        name="implementation_interest"
+                                        value="yes"
+                                    >
+
+                                    <button
+                                        class="button"
+                                        type="submit"
+                                    >
+                                        Yes, explore it
+                                    </button>
+                                </form>
+
+                                <form method="POST">
+                                    <input
+                                        type="hidden"
+                                        name="action"
+                                        value="implementation_interest"
+                                    >
+
+                                    <input
+                                        type="hidden"
+                                        name="implementation_interest"
+                                        value="no"
+                                    >
+
+                                    <button
+                                        class="button button-secondary"
+                                        type="submit"
+                                    >
+                                        Not right now
+                                    </button>
+                                </form>
+
+                            </div>
+
+                        </div>
+
+                    {% endif %}
+
+                    {% if data.implementation_interest
+                          and not data.requirements_collected %}
+
+                        <div class="gate">
+
+                            <h2>
+                                Implementation requirements
+                            </h2>
+
+                            <p>
+                                If you want to explore implementation,
+                                describe what you would want the
+                                system or service to handle.
+                            </p>
+
+                            <form method="POST">
+
+                                <input
+                                    type="hidden"
+                                    name="action"
+                                    value="requirements"
+                                >
+
+                                <div class="field">
+                                    <textarea
+                                        name="requirements"
+                                        required
+                                        placeholder="What would you want implemented?"
+                                    ></textarea>
+                                </div>
+
+                                <button
+                                    class="button"
+                                    type="submit"
+                                >
+                                    Continue →
+                                </button>
+
+                            </form>
+
+                        </div>
+
+                    {% endif %}
+
+                    {% if data.requirements_collected
+                          and not data.budget_disclosed %}
+
+                        <div class="gate">
+
+                            <h2>
+                                Budget
+                            </h2>
+
+                            <p>
+                                What budget have you allocated
+                                for solving this problem?
+                            </p>
+
+                            <p class="small">
+                                This is asked before pricing so
+                                the scope and commercial discussion
+                                can be handled appropriately.
+                            </p>
+
+                            <form method="POST">
+
+                                <input
+                                    type="hidden"
+                                    name="action"
+                                    value="budget"
+                                >
+
+                                <div class="field">
+                                    <input
+                                        type="text"
+                                        name="budget"
+                                        required
+                                        placeholder="Example: ₹5,000"
+                                    >
+                                </div>
+
+                                <button
+                                    class="button"
+                                    type="submit"
+                                >
+                                    Continue →
+                                </button>
+
+                            </form>
+
+                        </div>
+
+                    {% endif %}
+
+                    {% if data.budget_disclosed %}
+
+                        <div class="gate">
+
+                            <h2>
+                                Consultation completed
+                            </h2>
+
+                            <p>
+                                Your requirements and budget have
+                                been recorded. The next step is to
+                                review the appropriate scope and
+                                commercial terms.
+                            </p>
+
+                            <p class="small">
+                                Pricing is intentionally not
+                                presented before the required
+                                consultation information has been
+                                collected.
+                            </p>
+
+                        </div>
+
+                    {% endif %}
+
+                {% endif %}
+
+            {% endif %}
+
+            <div class="restart">
+
+                <form method="POST">
+
+                    <input
+                        type="hidden"
+                        name="action"
+                        value="restart"
+                    >
+
+                    <button
+                        class="button button-secondary"
+                        type="submit"
+                    >
+                        Start over
+                    </button>
+
+                </form>
+
+            </div>
+
+        {% endif %}
+
+    </div>
+
+</div>
+
+</body>
+</html>

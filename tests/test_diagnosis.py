@@ -215,7 +215,59 @@ class TestDiagnosisEngine(unittest.TestCase):
         )
 
         self.assertIsNone(recommendation)
+    def test_natural_language_follow_up_evidence_is_detected(self):
+        diagnoses = diagnose_business(
+            business={
+                "name": "Test Coaching Institute",
+                "category": "coaching institute",
+                "description": (
+                    "We receive enquiries through our website and WhatsApp. "
+                    "Staff responds manually by phone or WhatsApp. "
+                    "Students who do not enroll immediately are followed up "
+                    "manually."
+                ),
+            },
+            signal=(
+                "Following up with students who enquire but do not enroll "
+                "immediately takes the most manual effort."
+            ),
+        )
 
+        self.assertTrue(diagnoses)
+
+        problem_keys = {
+            diagnosis.problem_key
+            for diagnosis in diagnoses
+        }
+
+        self.assertIn("FOLLOW_UP_GAP", problem_keys)
+
+    def test_natural_language_follow_up_evidence_recommends_follow_up_system(self):
+        diagnosis = best_diagnosis(
+            business={
+                "name": "Test Coaching Institute",
+                "category": "coaching institute",
+                "description": (
+                    "Our staff manually contacts students who do not enroll "
+                    "immediately. There is no fixed process for remembering "
+                    "which students need another follow-up."
+                ),
+            },
+            signal=(
+                "Following up with students who enquire but do not enroll "
+                "immediately takes the most manual effort."
+            ),
+        )
+
+        self.assertIsNotNone(diagnosis)
+        self.assertEqual(
+            diagnosis.problem_key,
+            "FOLLOW_UP_GAP",
+        )
+        self.assertEqual(
+            diagnosis.service_key,
+            "FOLLOW_UP_SYSTEM",
+        )
 
 if __name__ == "__main__":
     unittest.main()
