@@ -5,7 +5,7 @@ on:
     branches:
       - deployment/replit-full-engine-20261015
     paths:
-      - ".release-import/**"
+      - ".release-import/READY"
 
 permissions:
   contents: write
