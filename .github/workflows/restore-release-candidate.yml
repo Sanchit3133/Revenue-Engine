@@ -26,7 +26,7 @@ jobs:
           shopt -s nullglob
           parts=(.release-import/part-*.b64.txt)
           if [[ "${#parts[@]}" -ne 9 ]]; then
-            echo "Expected 9 source archive chunks, found ${#parts[@]}."
+            echo "Expected 21 source archive chunks, found ${#parts[@]}."
             exit 1
           fi
           cat "${parts[@]}" > /tmp/revenue-engine-release.tar.gz.b64
