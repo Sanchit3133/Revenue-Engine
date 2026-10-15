@@ -1,10 +1,18 @@
 from flask import Blueprint, render_template, request, session
+from datetime import datetime, timezone
+from email.utils import parseaddr
+import json
+import uuid
+import secrets
+
+from app.database import connect, init_db
+from app.web.session_state import default_consultation, get_current_consultation, save_consultation
+import logging
 
 from app.consultation import (
     ConsultationStage,
     consultation_questions,
     educational_explanation,
-    next_step,
 )
 from app.revenue_engine import LeadProfile, RevenueEngine
 
@@ -17,33 +25,22 @@ web_bp = Blueprint(
 
 
 def _get_session_data():
-    return session.setdefault(
-        "consultation",
-        {
-            "stage": ConsultationStage.FIRST_CONTACT.value,
-            "business_name": "",
-            "business_type": "",
-            "website": "",
-            "customer_process": "",
-            "biggest_problem": "",
-            "current_tools": "",
-            "answers": [],
-            "question_index": 0,
-            "service_key": None,
-            "problem_identified": False,
-            "solution_explained": False,
-            "implementation_interest": False,
-            "requirements_collected": False,
-            "budget_disclosed": False,
-            "written_agreement": False,
-            "follow_up_count": 0,
-        },
-    )
+    return get_current_consultation()
 
 
 def _save_session_data(data):
-    session["consultation"] = data
-    session.modified = True
+    save_consultation(data)
+
+
+def _valid_contact_email(value):
+    email = (value or "").strip()
+    _, parsed = parseaddr(email)
+    if not parsed or parsed.lower() != email.lower() or "@" not in email:
+        return False
+    local, _, domain = email.rpartition("@")
+    return bool(local and domain and "." in domain and not domain.startswith(".") and not domain.endswith("."))
+
+
 
 
 def _build_profile(data):
@@ -108,28 +105,97 @@ def _run_engine(data):
     return engine, diagnoses
 
 
+def _format_diagnosis(diagnosis):
+    """
+    Convert the internal Diagnosis object into prospect-safe
+    presentation data.
+
+    Internal Python representation must never be shown directly
+    to a prospect.
+    """
+
+    problem_name = getattr(
+        diagnosis,
+        "problem_name",
+        None,
+    )
+
+    if not problem_name:
+        problem_name = getattr(
+            diagnosis,
+            "title",
+            "Potential process gap",
+        )
+
+    explanation = getattr(
+        diagnosis,
+        "explanation",
+        "",
+    )
+
+    confidence = getattr(
+        diagnosis,
+        "confidence",
+        "medium",
+    )
+
+    service_key = getattr(
+        diagnosis,
+        "service_key",
+        "",
+    )
+
+    return {
+        "problem_name": problem_name,
+        "explanation": explanation,
+        "confidence": confidence,
+        "service_key": service_key,
+    }
+
+
+def _format_assessment(diagnoses):
+    """
+    Return only human-readable assessment information.
+
+    This deliberately excludes internal keys, dataclass
+    representations, raw evidence structures, and Python objects.
+    """
+
+    if not diagnoses:
+        return []
+
+    return [
+        _format_diagnosis(diagnosis)
+        for diagnosis in diagnoses
+    ]
+
+
 @web_bp.get("/")
 def home():
-    return """
-    <h1>Revenue Engine</h1>
-    <p>
-        <a href="/consultation">
-            Start consultation
-        </a>
-    </p>
-    """
+    return render_template("home.html")
 
 
 @web_bp.route("/consultation", methods=["GET", "POST"])
 def consultation():
     data = _get_session_data()
+    if not session.get("assistant_csrf_token"):
+        session["assistant_csrf_token"] = secrets.token_urlsafe(32)
+    assistant_csrf_token = session["assistant_csrf_token"]
+    if not session.get("consultation_csrf_token"):
+        session["consultation_csrf_token"] = secrets.token_urlsafe(32)
+    consultation_csrf_token = session["consultation_csrf_token"]
 
     error = None
     result = None
     question = None
     explanation = None
 
-    if request.method == "POST":
+    if request.method == "POST" and not secrets.compare_digest(
+        str(session.get("consultation_csrf_token", "")),
+        str(request.form.get("consultation_csrf_token", "")),
+    ):
+        error = "This form expired or failed its security check. Refresh the page and try again."
+    elif request.method == "POST":
         action = request.form.get("action", "").strip()
 
         # ---------------------------------------------------------
@@ -137,12 +203,15 @@ def consultation():
         # ---------------------------------------------------------
         if action == "restart":
             session.pop("consultation", None)
+            session.pop("consultation_public_id", None)
 
             data = _get_session_data()
 
             return render_template(
                 "consultation.html",
                 data=data,
+                assistant_csrf_token=assistant_csrf_token,
+                consultation_csrf_token=consultation_csrf_token,
                 question=None,
                 explanation=None,
                 result=None,
@@ -156,47 +225,49 @@ def consultation():
             business_name = request.form.get(
                 "business_name",
                 "",
-            ).strip()
+            ).strip()[:160]
+
+            contact_email = request.form.get("contact_email", "").strip()[:254]
+            contact_consent = request.form.get("contact_consent") == "yes"
 
             business_type = request.form.get(
                 "business_type",
                 "",
-            ).strip()
+            ).strip()[:120]
 
             website = request.form.get(
                 "website",
                 "",
-            ).strip()
+            ).strip()[:300]
 
             customer_process = request.form.get(
                 "customer_process",
                 "",
-            ).strip()
+            ).strip()[:1000]
 
             biggest_problem = request.form.get(
                 "biggest_problem",
                 "",
-            ).strip()
+            ).strip()[:1500]
 
             current_tools = request.form.get(
                 "current_tools",
                 "",
-            ).strip()
+            ).strip()[:1000]
 
-            if (
-                not business_name
-                or not business_type
-                or not biggest_problem
-            ):
-                error = (
-                    "Please complete the required fields "
-                    "before continuing."
-                )
+            if not business_name or not business_type or not biggest_problem:
+                error = "Please complete the required fields before continuing."
+            elif not _valid_contact_email(contact_email):
+                error = "Please enter a valid business email address."
+            elif not contact_consent:
+                error = "Please confirm that we may use your details to respond to this consultation."
 
             else:
                 data.update(
                     {
                         "business_name": business_name,
+                        "contact_email": contact_email,
+                        "contact_consent": True,
                         "business_type": business_type,
                         "website": website,
                         "customer_process": customer_process,
@@ -212,6 +283,8 @@ def consultation():
                 return render_template(
                     "consultation.html",
                     data=data,
+                    assistant_csrf_token=assistant_csrf_token,
+                    consultation_csrf_token=consultation_csrf_token,
                     question=_get_next_question(data),
                     explanation=None,
                     result=None,
@@ -225,15 +298,27 @@ def consultation():
             answer = request.form.get(
                 "answer",
                 "",
-            ).strip()
+            ).strip()[:1500]
 
             if not answer:
                 error = "Please enter an answer before continuing."
 
             else:
-                data.setdefault("answers", []).append(answer)
+                answers = data.setdefault("answers", [])
+                if len(answers) >= 30:
+                    error = "This consultation has reached its question limit. Please submit the requirements below or restart the consultation."
+                    question = _get_next_question(data)
+                    return render_template(
+                        "consultation.html", data=data,
+                        assistant_csrf_token=assistant_csrf_token,
+                        consultation_csrf_token=consultation_csrf_token,
+                        question=question, explanation=None, result=None, error=error,
+                    )
+                answers.append(answer)
 
-                data["stage"] = ConsultationStage.CONSULTATION.value
+                data["stage"] = (
+                    ConsultationStage.CONSULTATION.value
+                )
 
                 data["question_index"] = (
                     int(data.get("question_index", 0)) + 1
@@ -241,8 +326,6 @@ def consultation():
 
                 _save_session_data(data)
 
-                # Once enough direct evidence has been collected,
-                # let the existing Revenue Engine analyze it.
                 engine, diagnoses = _run_engine(data)
 
                 if diagnoses:
@@ -251,12 +334,17 @@ def consultation():
                         ConsultationStage.PROBLEM_IDENTIFIED.value
                     )
 
+                    data["service_key"] = getattr(
+                        diagnoses[0],
+                        "service_key",
+                        None,
+                    )
+
                     _save_session_data(data)
 
                     result = {
-                        "analysis": "\n\n".join(
-                            str(diagnosis)
-                            for diagnosis in diagnoses
+                        "assessments": _format_assessment(
+                            diagnoses
                         ),
                         "snapshot": engine.snapshot(),
                     }
@@ -265,9 +353,6 @@ def consultation():
                         diagnoses,
                         data,
                     )
-
-                else:
-                    result = None
 
                 question = _get_next_question(data)
 
@@ -285,6 +370,7 @@ def consultation():
                 data["stage"] = (
                     ConsultationStage.IMPLEMENTATION_INTEREST.value
                 )
+
             elif interest == "no":
                 data["implementation_interest"] = False
                 data["stage"] = (
@@ -300,13 +386,14 @@ def consultation():
             requirements = request.form.get(
                 "requirements",
                 "",
-            ).strip()
+            ).strip()[:3000]
 
             if not requirements:
                 error = (
                     "Please describe what you would want "
                     "the system or implementation to handle."
                 )
+
             else:
                 data["requirements_collected"] = True
                 data["requirements"] = requirements
@@ -323,7 +410,7 @@ def consultation():
             budget = request.form.get(
                 "budget",
                 "",
-            ).strip()
+            ).strip()[:300]
 
             if not budget:
                 error = "Please enter your available budget."
@@ -364,9 +451,8 @@ def consultation():
 
             if diagnoses:
                 result = {
-                    "analysis": "\n\n".join(
-                        str(diagnosis)
-                        for diagnosis in diagnoses
+                    "assessments": _format_assessment(
+                        diagnoses
                     ),
                     "snapshot": engine.snapshot(),
                 }
@@ -376,17 +462,17 @@ def consultation():
                     data,
                 )
 
-        except Exception as exc:
-            error = (
-                "The consultation could not complete this "
-                f"assessment step: {exc}"
-            )
+        except Exception:
+            logging.exception("Revenue Engine consultation assessment failed")
+            error = "The consultation could not complete this assessment step right now. Your saved information is unchanged; please try again."
 
     question = _get_next_question(data)
 
     return render_template(
         "consultation.html",
         data=data,
+        assistant_csrf_token=assistant_csrf_token,
+        consultation_csrf_token=consultation_csrf_token,
         question=question,
         explanation=explanation,
         result=result,

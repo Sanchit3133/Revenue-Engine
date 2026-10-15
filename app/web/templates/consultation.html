@@ -51,6 +51,11 @@
             font-size: 24px;
         }
 
+        h3 {
+            margin-top: 0;
+            font-size: 18px;
+        }
+
         p {
             line-height: 1.7;
         }
@@ -70,7 +75,7 @@
 
         .progress-bar {
             height: 100%;
-            width: 25%;
+            width: 65%;
             background: #172033;
             border-radius: 999px;
         }
@@ -127,6 +132,18 @@
             color: #172033;
         }
 
+
+        .assistant-box { margin-top: 28px; padding: 22px; border: 1px solid #d7dce5; border-radius: 14px; background: #fff; }
+        .assistant-box h2 { margin-top: 0; }
+        .assistant-log { display: grid; gap: 10px; max-height: 320px; overflow-y: auto; padding: 12px; background: #f8fafc; border-radius: 10px; margin: 14px 0; }
+        .assistant-message { max-width: 92%; padding: 11px 13px; border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+        .assistant-message.user { justify-self: end; background: #172033; color: #fff; }
+        .assistant-message.assistant { justify-self: start; background: #eef1f6; color: #172033; }
+        .assistant-form { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
+        .assistant-form input { min-width: 0; }
+        .assistant-help { font-size: 13px; color: #596579; }
+        @media (max-width: 560px) { .assistant-form { grid-template-columns: 1fr; } .assistant-message { max-width: 100%; } }
+
         .error {
             margin-bottom: 25px;
             padding: 14px 16px;
@@ -137,26 +154,96 @@
 
         .assessment {
             margin-top: 30px;
-            padding: 24px;
+            padding: 28px;
             border-radius: 14px;
             background: #f7f8fb;
         }
 
-        .assessment-text {
-            white-space: pre-wrap;
+        .diagnosis-card {
+            background: white;
+            border-radius: 14px;
+            padding: 24px;
+            margin-bottom: 20px;
+            border: 1px solid #e3e7ee;
+        }
+
+        .diagnosis-title {
+            font-size: 22px;
+            font-weight: 700;
+            margin-bottom: 12px;
+        }
+
+        .diagnosis-explanation {
+            color: #4d596d;
             line-height: 1.7;
         }
 
+        .confidence {
+            display: inline-block;
+            margin-top: 10px;
+            padding: 6px 10px;
+            border-radius: 999px;
+            background: #eef1f6;
+            color: #172033;
+            font-size: 13px;
+            font-weight: 600;
+            text-transform: capitalize;
+        }
+
+        .evidence {
+            margin-top: 22px;
+        }
+
+        .evidence ul {
+            margin: 10px 0 0;
+            padding-left: 22px;
+        }
+
+        .evidence li {
+            margin-bottom: 9px;
+            line-height: 1.6;
+        }
+
+        .recommended-service {
+            margin-top: 22px;
+            padding: 16px 18px;
+            border-radius: 10px;
+            background: #f1f3f7;
+        }
+
+        .recommended-service strong {
+            display: block;
+            margin-bottom: 5px;
+        }
+
         .explanation {
-            margin-top: 20px;
-            padding: 20px;
+            margin-top: 25px;
+            padding: 22px;
             border-left: 4px solid #172033;
             background: #f1f3f7;
         }
 
+        .questions {
+            margin-top: 22px;
+            padding: 20px;
+            border-radius: 12px;
+            background: #fafbfc;
+            border: 1px solid #e3e7ee;
+        }
+
+        .questions ul {
+            margin: 10px 0 0;
+            padding-left: 22px;
+        }
+
+        .questions li {
+            margin-bottom: 8px;
+            line-height: 1.6;
+        }
+
         .gate {
             margin-top: 25px;
-            padding: 18px;
+            padding: 22px;
             border-radius: 12px;
             background: #fff8e8;
         }
@@ -178,6 +265,11 @@
 
         .restart {
             margin-top: 30px;
+        }
+
+        .completed {
+            background: #f1f7f3;
+            border: 1px solid #d6e9dc;
         }
 
         @media (max-width: 650px) {
@@ -233,6 +325,7 @@
             {% endif %}
 
             <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
 
                 <input
                     type="hidden"
@@ -250,6 +343,26 @@
                         name="business_name"
                         required
                     >
+                </div>
+
+                <div class="field">
+                    <label>
+                        Business email address *
+                    </label>
+                    <input
+                        type="email"
+                        name="contact_email"
+                        required
+                        autocomplete="email"
+                        placeholder="you@yourbusiness.com"
+                    >
+                </div>
+
+                <div class="field">
+                    <label style="display:flex; gap:10px; align-items:flex-start; font-weight:normal;">
+                        <input type="checkbox" name="contact_consent" value="yes" required style="width:auto; margin-top:4px;">
+                        I agree that my contact details and submitted consultation information may be used to respond to this request.
+                    </label>
                 </div>
 
                 <div class="field">
@@ -313,7 +426,10 @@
                     ></textarea>
                 </div>
 
-                <button class="button" type="submit">
+                <button
+                    class="button"
+                    type="submit"
+                >
                     Continue consultation →
                 </button>
 
@@ -353,6 +469,7 @@
                 </p>
 
                 <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
 
                     <input
                         type="hidden"
@@ -387,12 +504,124 @@
                             Initial assessment
                         </h2>
 
-                        <div class="assessment-text">
-                            {{ result.analysis }}
-                        </div>
+                        {% if result.assessments %}
+
+                            {% for diagnosis in result.assessments %}
+
+                                <div class="diagnosis-card">
+
+                                    <div class="diagnosis-title">
+                                        {{ diagnosis.problem_name }}
+                                    </div>
+
+                                    <div class="diagnosis-explanation">
+                                        {{ diagnosis.explanation }}
+                                    </div>
+
+                                    <div class="confidence">
+                                        {{ diagnosis.confidence }}
+                                        confidence
+                                    </div>
+
+                                    {% if diagnosis.evidence %}
+
+                                        <div class="evidence">
+
+                                            <h3>
+                                                Why this was identified
+                                            </h3>
+
+                                            <ul>
+
+                                                {% for evidence in diagnosis.evidence %}
+
+                                                    <li>
+                                                        {{ evidence
+                                                            | replace(
+                                                                "Evidence:",
+                                                                ""
+                                                            )
+                                                            | replace(
+                                                                "Observed signal:",
+                                                                ""
+                                                            )
+                                                            | trim
+                                                        }}
+                                                    </li>
+
+                                                {% endfor %}
+
+                                            </ul>
+
+                                        </div>
+
+                                    {% endif %}
+
+                                    <div class="recommended-service">
+
+                                        <strong>
+                                            Recommended area
+                                        </strong>
+
+                                        {{ diagnosis.service_key
+                                            | replace("_", " ")
+                                            | title
+                                        }}
+
+                                    </div>
+
+                                    {% if diagnosis.questions %}
+
+                                        <div class="questions">
+
+                                            <strong>
+                                                Questions to consider
+                                            </strong>
+
+                                            <ul>
+
+                                                {% for item in diagnosis.questions %}
+
+                                                    <li>
+                                                        {{ item }}
+                                                    </li>
+
+                                                {% endfor %}
+
+                                            </ul>
+
+                                        </div>
+
+                                    {% endif %}
+
+                                </div>
+
+                            {% endfor %}
+
+                        {% else %}
+
+                            <div class="diagnosis-card">
+
+                                <div class="diagnosis-title">
+                                    No specific implementation identified yet
+                                </div>
+
+                                <div class="diagnosis-explanation">
+                                    The information provided so far does not
+                                    give enough evidence to identify a specific
+                                    operational problem. More consultation
+                                    information is needed before recommending
+                                    an implementation.
+                                </div>
+
+                            </div>
+
+                        {% endif %}
 
                         {% if explanation %}
+
                             <div class="explanation">
+
                                 <strong>
                                     What this type of solution does
                                 </strong>
@@ -400,7 +629,9 @@
                                 <p>
                                     {{ explanation }}
                                 </p>
+
                             </div>
+
                         {% endif %}
 
                     </div>
@@ -414,9 +645,17 @@
                                 implementing this?
                             </strong>
 
+                            <p class="small">
+                                This does not commit you to purchasing
+                                anything. It simply tells us whether
+                                you want to explore the implementation.
+                            </p>
+
                             <div class="choice-row">
 
                                 <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
+
                                     <input
                                         type="hidden"
                                         name="action"
@@ -435,9 +674,12 @@
                                     >
                                         Yes, explore it
                                     </button>
+
                                 </form>
 
                                 <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
+
                                     <input
                                         type="hidden"
                                         name="action"
@@ -456,6 +698,7 @@
                                     >
                                         Not right now
                                     </button>
+
                                 </form>
 
                             </div>
@@ -480,6 +723,7 @@
                             </p>
 
                             <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
 
                                 <input
                                     type="hidden"
@@ -488,11 +732,13 @@
                                 >
 
                                 <div class="field">
+
                                     <textarea
                                         name="requirements"
                                         required
                                         placeholder="What would you want implemented?"
                                     ></textarea>
+
                                 </div>
 
                                 <button
@@ -529,6 +775,7 @@
                             </p>
 
                             <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
 
                                 <input
                                     type="hidden"
@@ -537,12 +784,14 @@
                                 >
 
                                 <div class="field">
+
                                     <input
                                         type="text"
                                         name="budget"
                                         required
                                         placeholder="Example: ₹5,000"
                                     >
+
                                 </div>
 
                                 <button
@@ -560,7 +809,7 @@
 
                     {% if data.budget_disclosed %}
 
-                        <div class="gate">
+                        <div class="gate completed">
 
                             <h2>
                                 Consultation completed
@@ -579,6 +828,8 @@
                                 consultation information has been
                                 collected.
                             </p>
+                            <p class="small">To request a generated draft or submit a revision/help request, use the private request queue. A file will not be delivered until the owner reviews and approves it.</p>
+                            <a class="button" href="/client/request">Submit a request for review →</a>
 
                         </div>
 
@@ -588,9 +839,76 @@
 
             {% endif %}
 
+
+        {% if data.contact_consent and data.submission_public_id %}
+            <section class="assistant-box" aria-labelledby="assistant-title">
+                <h2 id="assistant-title">Ask the Revenue Engine assistant</h2>
+                <p class="assistant-help">Continue the business conversation here. The assistant helps clarify requirements; it cannot quote a price before your budget is known, approve payment, or deliver files.</p>
+                <div id="assistantLog" class="assistant-log" aria-live="polite" aria-label="Consultation messages"></div>
+                <form id="assistantForm" class="assistant-form">
+                    <input id="assistantInput" type="text" maxlength="1200" required autocomplete="off" placeholder="Describe a question or explain your process…" aria-label="Your message">
+                    <button class="button" id="assistantSend" type="submit">Send</button>
+                </form>
+                <p id="assistantStatus" class="assistant-help" role="status"></p>
+            </section>
+            <script>
+            (() => {
+                const log = document.getElementById('assistantLog');
+                const form = document.getElementById('assistantForm');
+                const input = document.getElementById('assistantInput');
+                const send = document.getElementById('assistantSend');
+                const status = document.getElementById('assistantStatus');
+                const csrf = {{ assistant_csrf_token|tojson }};
+                function appendMessage(role, content) {
+                    const item = document.createElement('div');
+                    item.className = 'assistant-message ' + (role === 'user' ? 'user' : 'assistant');
+                    item.textContent = content;
+                    log.appendChild(item);
+                    log.scrollTop = log.scrollHeight;
+                }
+                async function loadHistory() {
+                    try {
+                        const response = await fetch('/api/assistant/history', {credentials: 'same-origin'});
+                        if (!response.ok) return;
+                        const payload = await response.json();
+                        (payload.messages || []).forEach(message => appendMessage(message.role, message.content));
+                    } catch (_error) { /* The consultation form remains available if history cannot load. */ }
+                }
+                form.addEventListener('submit', async (event) => {
+                    event.preventDefault();
+                    const message = input.value.trim();
+                    if (message.length < 2 || send.disabled) return;
+                    appendMessage('user', message);
+                    input.value = '';
+                    send.disabled = true;
+                    status.textContent = 'Thinking…';
+                    try {
+                        const response = await fetch('/api/assistant', {
+                            method: 'POST',
+                            credentials: 'same-origin',
+                            headers: {'Content-Type': 'application/json'},
+                            body: JSON.stringify({message, csrf_token: csrf})
+                        });
+                        const payload = await response.json();
+                        if (!response.ok) throw new Error(payload.error || 'The assistant could not respond.');
+                        appendMessage('assistant', payload.reply);
+                        status.textContent = payload.using_ai ? 'AI-assisted response. Please verify important details.' : 'Backup guidance used; AI service was unavailable.';
+                    } catch (error) {
+                        status.textContent = error.message || 'Message not sent. Please try again.';
+                    } finally {
+                        send.disabled = false;
+                        input.focus();
+                    }
+                });
+                loadHistory();
+            })();
+            </script>
+        {% endif %}
+
             <div class="restart">
 
                 <form method="POST">
+                <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
 
                     <input
                         type="hidden"

@@ -1,4 +1,4 @@
-"""Central configuration for the Revenue Engine."""
+"""Central, validated configuration for the Revenue Engine."""
 
 from __future__ import annotations
 
@@ -9,6 +9,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 load_dotenv()
+
+SUPPORTED_EMAIL_PROVIDERS = frozenset({"brevo", "sendgrid"})
+DEFAULT_LANDING_PAGE_URL = "https://sanchit-agarwal.me/#services"
 
 
 def _int_env(name: str, default: int) -> int:
@@ -24,17 +27,39 @@ def _int_env(name: str, default: int) -> int:
     return value
 
 
+def _optional_env(name: str) -> str | None:
+    value = os.getenv(name, "").strip()
+    return value or None
+
+
 @dataclass(frozen=True)
 class Settings:
     environment: str
     db_path: Path
     landing_page_url: str
-
+    target_market_country: str
+    target_market_language: str
+    market_validation_required: bool
     google_api_key: str | None
+
+    email_provider: str
+    brevo_api_key: str | None
+    brevo_sender: str | None
+    brevo_reply_to: str | None
+    brevo_webhook_token: str | None
 
     sendgrid_api_key: str | None
     sendgrid_sender: str | None
     sendgrid_reply_to: str | None
+
+    razorpay_webhook_secret: str | None
+    flask_secret_key: str | None
+    owner_dashboard_password: str | None
+    owner_notification_email: str | None
+    public_app_url: str | None
+    hf_token: str | None
+    hf_api_url: str
+    hf_model: str
 
     campaign_limit: int
     daily_limit: int
@@ -47,21 +72,40 @@ class Settings:
 def load_settings() -> Settings:
     min_delay = _int_env("MIN_SEND_DELAY", 8)
     max_delay = _int_env("MAX_SEND_DELAY", 20)
-
     if max_delay < min_delay:
         raise ValueError("MAX_SEND_DELAY must be >= MIN_SEND_DELAY")
+
+    provider = os.getenv("EMAIL_PROVIDER", "brevo").strip().lower()
+    if provider not in SUPPORTED_EMAIL_PROVIDERS:
+        supported = ", ".join(sorted(SUPPORTED_EMAIL_PROVIDERS))
+        raise ValueError(f"EMAIL_PROVIDER must be one of: {supported}")
 
     return Settings(
         environment=os.getenv("ENVIRONMENT", "development").strip().lower(),
         db_path=Path(os.getenv("OUTREACH_DB", "data/revenue_engine.db")),
         landing_page_url=os.getenv(
-            "LANDING_PAGE_URL",
-            "https://sanchit-agarwal.me/257-2/",
+            "LANDING_PAGE_URL", DEFAULT_LANDING_PAGE_URL
         ).strip(),
-        google_api_key=os.getenv("GOOGLE_API_KEY") or None,
-        sendgrid_api_key=os.getenv("SENDGRID_API_KEY") or None,
-        sendgrid_sender=os.getenv("SENDGRID_SENDER") or None,
-        sendgrid_reply_to=os.getenv("SENDGRID_REPLY_TO") or None,
+        target_market_country=os.getenv("TARGET_MARKET_COUNTRY", "India").strip(),
+        target_market_language=os.getenv("TARGET_MARKET_LANGUAGE", "en").strip().lower(),
+        market_validation_required=os.getenv("MARKET_VALIDATION_REQUIRED", "true").strip().lower() in {"1", "true", "yes", "on"},
+        google_api_key=_optional_env("GOOGLE_API_KEY"),
+        email_provider=provider,
+        brevo_api_key=_optional_env("BREVO_API_KEY"),
+        brevo_sender=_optional_env("BREVO_SENDER"),
+        brevo_reply_to=_optional_env("BREVO_REPLY_TO"),
+        brevo_webhook_token=_optional_env("BREVO_WEBHOOK_TOKEN"),
+        sendgrid_api_key=_optional_env("SENDGRID_API_KEY"),
+        sendgrid_sender=_optional_env("SENDGRID_SENDER"),
+        sendgrid_reply_to=_optional_env("SENDGRID_REPLY_TO"),
+        razorpay_webhook_secret=_optional_env("RAZORPAY_WEBHOOK_SECRET"),
+        flask_secret_key=_optional_env("FLASK_SECRET_KEY"),
+        owner_dashboard_password=_optional_env("OWNER_DASHBOARD_PASSWORD"),
+        owner_notification_email=_optional_env("OWNER_NOTIFICATION_EMAIL"),
+        public_app_url=_optional_env("PUBLIC_APP_URL"),
+        hf_token=_optional_env("HF_TOKEN") or _optional_env("HF_API_KEY"),
+        hf_api_url=os.getenv("HF_API_URL", "https://router.huggingface.co/v1/chat/completions").strip(),
+        hf_model=os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct:fastest").strip(),
         campaign_limit=_int_env("CAMPAIGN_LIMIT", 10),
         daily_limit=_int_env("DAILY_LIMIT", 25),
         min_send_delay=min_delay,
