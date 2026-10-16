@@ -44,6 +44,9 @@ from app.lead_engine import (
     normalize_email,
     normalize_website,
 )
+from app.models import LeadState
+from app.pipeline import transition
+from app.market_strategy import get_market
 from app.scoring import score_business
 
 
@@ -397,16 +400,11 @@ def clean_email_candidate(value: str) -> str:
     """
 
     value = unquote(value or "")
-    value = value.replace(
-        "&commat;",
-        "@",
-    )
-
     value = value.strip()
 
     # Remove common surrounding punctuation.
     value = value.strip(
-        " \t\r\n<>\"'()[]{};,:"
+        " \t\r\n<>\\\"'()[]{};,:"
     )
 
     return normalize_email(value)
@@ -1024,7 +1022,11 @@ def save_lead(
     lead: dict,
 ) -> int | None:
     """
-    Persist a qualified lead.
+    Persist a qualified lead through the pipeline.
+
+    New leads are created in DISCOVERED state first.
+    The existing pipeline then records the audited transition
+    DISCOVERED -> QUALIFIED.
     """
 
     try:
@@ -1038,13 +1040,14 @@ def save_lead(
                 phone,
                 website,
                 email,
+                country,
                 qualification,
                 score,
                 signal,
                 notes,
                 state
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 lead["place_id"],
@@ -1053,17 +1056,34 @@ def save_lead(
                 lead["phone"],
                 lead["website"],
                 lead["email"],
+                lead.get("country") or settings.target_market_country or "India",
                 lead["qualification"],
                 lead["score"],
                 lead["signal"],
                 lead["notes"],
-                "QUALIFIED",
+                LeadState.DISCOVERED.value,
             ),
         )
 
+        lead_id = cursor.lastrowid
+
         conn.commit()
 
-        return cursor.lastrowid
+        if lead_id is None:
+            return None
+
+        transition(
+            conn,
+            lead_id,
+            LeadState.QUALIFIED,
+            reason=(
+                f"Lead qualified by discovery scoring "
+                f"(score={lead['score']}, "
+                f"qualification={lead['qualification']})"
+            ),
+        )
+
+        return lead_id
 
     except sqlite3.IntegrityError:
 
@@ -1354,6 +1374,12 @@ def main() -> None:
     )
 
     parser.add_argument(
+        "--country",
+        default="",
+        help="Country to append to the search location (recommended for international discovery)",
+    )
+
+    parser.add_argument(
         "--query",
         required=True,
         help="Google Places search query",
@@ -1386,6 +1412,12 @@ def main() -> None:
     )
 
     args = parser.parse_args()
+
+    requested_country = (args.country or "").strip() or settings.target_market_country or "India"
+    try:
+        args.country = get_market(requested_country).country
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     if args.pages < 1:
 
@@ -1442,8 +1474,12 @@ def main() -> None:
         )
         print("=" * 60)
 
+        location_label = ", ".join(
+            part.strip() for part in (args.city, args.country) if part.strip()
+        )
+
         print(
-            f"City: {args.city}"
+            f"Location: {location_label}"
         )
 
         print(
@@ -1478,7 +1514,7 @@ def main() -> None:
         places = places_text_search(
             api_key=api_key,
             query=args.query,
-            city=args.city,
+            city=location_label,
             pages=args.pages,
         )
 
@@ -1631,6 +1667,7 @@ def main() -> None:
 
             for lead in qualified:
 
+                lead["country"] = args.country
                 lead_id = save_lead(
                     conn,
                     lead,
