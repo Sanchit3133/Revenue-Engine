@@ -20,13 +20,12 @@ This is a **deployment candidate, not a production-certified live system**.
 ## Validation performed for this package
 
 - `python -m compileall -q app scripts tests`: passed.
-- `python -m unittest discover -s tests -v`: 178 discovered; 162 passed; 16 skipped because Flask is not installed in the isolated review environment. The skipped tests are route/persistence tests and must run in the actual Codespaces/Replit environment after `pip install -r requirements.txt`.
-- All Jinja templates parsed successfully.
-- `python -m scripts.market_strategy --country India`: passed.
-- `python -m scripts.discover_leads --help`: passed and shows country selection.
-- `scripts.preflight` with temporary database and placeholder provider configuration: passed SQLite integrity check. This only verifies local configuration/database wiring; placeholder credentials are not real account verification.
-- `scripts.run_campaign --dry-run --limit 1 --provider brevo` against an empty temporary database: passed; no provider API request and no email were sent.
-- No live email, AI inference, webhook, payment, production deploy or customer delivery was attempted.
+- `python -m unittest discover -s tests -v`: 185 run, 185 passed, 0 failed, 0 skipped.
+- Three PostgreSQL integration tests passed against the configured development PostgreSQL database, covering SQL adaptation, repeatable schema initialization/preservation of existing rows, and backend health; two additional tests verified safe backend selection.
+- Preview `/healthz` returned HTTP 200 with `database: postgresql`; the home, consultation, client-request, and owner-login routes returned HTTP 200.
+- The Replit preview workflow is running on port 5000 with `python -m scripts.run_web`.
+- A synthetic SQLite migration dry run completed without writing to its source; the row count remained unchanged.
+- No live email, outreach, payment processing, production deploy, or customer delivery was attempted.
 
 ## India + international market behaviour
 
@@ -38,10 +37,10 @@ This is a **deployment candidate, not a production-certified live system**.
 
 ## Remaining production gates
 
-1. Install declared requirements in the real Codespaces/Replit environment and run all 178 tests, including the 16 Flask-dependent tests.
-2. Confirm the Replit deployment's database persists across restart and republish. **This candidate uses SQLite via `OUTREACH_DB`; setting Replit `DATABASE_URL` alone does not switch it to PostgreSQL.** If the chosen deployment has ephemeral local storage, a tested PostgreSQL adapter/migration is required before accepting durable customer records or enabling live outreach.
-3. Set secrets only in the deployment secret manager: production `FLASK_SECRET_KEY`, unique `OWNER_DASHBOARD_PASSWORD`, `OWNER_NOTIFICATION_EMAIL`, `PUBLIC_APP_URL`, valid `HF_TOKEN`, Google Places key when discovery is enabled, Brevo key/active sender, webhook authentication, and Razorpay webhook signing secret as needed.
-4. Verify `/healthz`, `/consultation`, `/client/request`, `/owner/login`, and all dashboard operations on the published HTTPS URL.
-5. Test Hugging Face response and fallback, owner notification, private draft download, approval rejection without captured payment/written scope, and a controlled approved delivery.
-6. Test Brevo delivered/bounce/complaint/unsubscribe/duplicate events and Razorpay test-mode signed capture/idempotency/payment reconciliation.
-7. Verify backups, restore, cost/billing limits and rollback before public campaign operation.
+1. This workspace is not published. Do not mark production verified until the user publishes and checks the published app's `/healthz` against Replit's separate production PostgreSQL database.
+2. Before Publish, verify a recent production restore point and scheduled backups in the Database tool; review the schema diff and rename prompts. Do not overwrite production data unintentionally.
+3. Configure `FLASK_SECRET_KEY` and `OWNER_DASHBOARD_PASSWORD` using Production Secrets. Add optional provider credentials only for explicitly enabled features; Brevo credentials are not configured in the current environment.
+4. Verify `/healthz`, `/consultation`, `/client/request`, `/owner/login`, and dashboard safeguards on the published HTTPS URL.
+5. Test Hugging Face response/fallback, owner notifications, private draft access, captured-payment and written-scope approval gates, and delivery uncertainty in controlled environments.
+6. Test provider webhook authentication, duplicate events, suppression/opt-out, and payment reconciliation with test-mode accounts before live use.
+7. Document app-code rollback separately from production database point-in-time restore; a code rollback does not undo data or schema changes.

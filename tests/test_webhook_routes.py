@@ -49,6 +49,11 @@ class TestWebhookRoutes(unittest.TestCase):
         response = self.client.post("/webhooks/brevo", json={"event": "delivered", "email": "route@example.com", "message-id": "route-message-id"})
         self.assertEqual(response.status_code, 401)
 
+    def test_health_check_reports_the_configured_database_backend(self):
+        response = self.client.get("/healthz")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json["database"], "sqlite")
+
     def test_brevo_webhook_processes_authenticated_delivery(self):
         response = self.client.post(
             "/webhooks/brevo",

@@ -1,76 +1,86 @@
 # Replit deployment guide — Revenue Engine
 
-The application is a Flask web service, not a static-only site. GitHub is the source-control/CI home; Replit runs the customer consultation, Hugging Face assistant, webhook receivers, client-request queue, and private owner dashboard.
+The Revenue Engine is a Flask web service, not a static-only site. It uses PostgreSQL on Replit; SQLite is retained for local development and isolated tests. This guide describes the manual release procedure. Publishing, billing changes, live email, outreach, and payment processing are not performed by this project setup.
 
-## Before publishing
+## Environment and database
 
-1. Import the reviewed Revenue Engine source into a Replit App (Import from GitHub after the release branch has been published, or upload the reviewed source archive into the existing Replit project after backing up its current files).
-2. Use Python 3.11 or newer and install the dependencies with `pip install -r requirements.txt`.
-3. Configure the web server run command as:
+- Replit maintains separate development and production PostgreSQL databases. The workspace preview connects to the development database.
+- When the app is published, Replit creates/manages its production PostgreSQL database and syncs that environment's `DATABASE_URL` into the deployment secrets. The published app does not share the preview's database. Do not copy or print either connection string.
+- `REPL_DEPLOYMENT=1` marks the published runtime as production. Production requires `DATABASE_URL` and refuses SQLite; there is no silent fallback to `OUTREACH_DB`.
+- For an external PostgreSQL provider, configure distinct development and production URLs through the corresponding Secrets environments. Never reuse a development URL in production by assumption.
+- The SQLite-to-PostgreSQL copier only writes into an empty development database. It never targets production.
 
-   `gunicorn --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 45 wsgi:app`
+## Replit run commands
 
-4. Configure the deployment secrets listed below. Never commit `.env` or paste secrets into issue/chat logs.
-5. Run `python -m compileall -q app scripts tests` and `python -m unittest discover -s tests -v` in the same Replit environment that will run the app.
-6. Run `python -m scripts.preflight` and verify `/healthz`, `/consultation`, `/client/request`, and `/owner/login`.
-7. **Persistence is a hard launch gate.** This candidate uses SQLite through `OUTREACH_DB`; simply setting Replit's `DATABASE_URL` does not make this code use PostgreSQL. Confirm the exact deployment's filesystem is durable across restart and republish. If it is not, do not accept real customer data or enable live outreach yet: complete a tested PostgreSQL adapter/migration first. Back up the database before any redeployment.
+- Preview workflow: `python -m scripts.run_web` on port `5000` (configured as a webview workflow in `.replit`).
+- Published app: `gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 45 wsgi:app` (the repository `Procfile`).
+- Do not run the Flask development server in production. Neither command applies schema changes at startup.
 
-## Required deployment secrets
+## Secrets
 
-- `ENVIRONMENT=production`
-- `FLASK_SECRET_KEY` — generate a new random secret (e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`)
-- `OUTREACH_DB` — path on storage that persists across restarts/deployments
-- `OWNER_DASHBOARD_PASSWORD` — unique, long password not used elsewhere
-- `OWNER_NOTIFICATION_EMAIL` — the inbox that should receive new client/revision/dissatisfaction requests
-- `PUBLIC_APP_URL` — the published HTTPS Replit app URL; used to place a dashboard link in owner notifications
-- `HF_TOKEN` — Hugging Face token with Inference Providers permission
-- `TARGET_MARKET_COUNTRY=India` — default country for discovery when a country is not passed explicitly; the dashboard always records the selected country per lead
-- `MARKET_VALIDATION_REQUIRED=true` — keep enabled for launch; blocks live send actions until the country has a saved validation attestation
-- `HF_MODEL` — configured supported model; current default can be changed if unavailable
-- `EMAIL_PROVIDER=brevo`, `BREVO_API_KEY`, `BREVO_SENDER`, and optional `BREVO_REPLY_TO`
-- `GOOGLE_API_KEY` for lead discovery (optional until that module is used)
-- `RAZORPAY_WEBHOOK_SECRET` from the Razorpay webhook configuration (optional until payment webhook is configured)
-- `BREVO_WEBHOOK_TOKEN` only if your actual Brevo event/webhook configuration supports sending that authentication header/token
+Use Replit Secrets for deployment values; never commit `.env`, put credentials in source, or paste values into logs/chat.
 
-The owner dashboard will be unavailable until `OWNER_DASHBOARD_PASSWORD` is configured. Owner request email notifications will remain visible in the dashboard but will not be emailed until `OWNER_NOTIFICATION_EMAIL`, `BREVO_API_KEY`, and `BREVO_SENDER` are configured. The dashboard link in emails uses `PUBLIC_APP_URL`; configure it after the app has a stable published URL.
+- Replit-managed `DATABASE_URL` is supplied for each environment automatically. Do not set or copy it manually for the managed database.
+- `FLASK_SECRET_KEY` — required in production; use a long random value.
+- `OWNER_DASHBOARD_PASSWORD` — unique long password for the private owner dashboard.
+- `OWNER_NOTIFICATION_EMAIL` and `PUBLIC_APP_URL` — only needed for configured owner notifications and published dashboard links.
+- `HF_TOKEN` — only if enabling the Hugging Face assistant.
+- `BREVO_API_KEY`, `BREVO_SENDER`, and optional webhook token — only after configuring and testing Brevo.
+- `GOOGLE_API_KEY` — only when using lead discovery.
+- `RAZORPAY_WEBHOOK_SECRET` — only after configuring the signed payment webhook.
 
-## Replit deployment UI
+Brevo credentials are not configured in the current environment. Keep live email/outreach and payment processing disabled until separate controlled acceptance tests and explicit approval.
 
-- Open the Replit App that will run the Revenue Engine.
-- Confirm the editor's files are the reviewed full engine, not just the previous Razorpay/JSON intake receiver. Back up that receiver before replacing anything.
-- Open **Deploy / Publish**, choose a web-server deployment type, and set the run command above. Check the shown cost before confirming publish; do not choose a paid resource without reviewing the charge.
-- Add secrets to deployment secrets (not source files), then publish.
-- Use the generated `*.replit.app` HTTPS URL for checks before connecting a custom domain.
+## Safe schema release procedure
 
-## Live URLs after deployment
+`app/database.py` is the schema source of truth. Schema changes are additive and repeatable. The configured `scripts/post-merge.sh` applies them to development after a task merge by running `python -m scripts.init_db`. This script is guarded against production. The app, health route, and Gunicorn workers never run DDL.
 
-- `/` — Revenue Engine customer homepage
-- `/consultation` — consented guided consultation with an AI assistant (HF-backed when token/model are available; controlled fallback otherwise)
-- `/client/request` — delivery, revision, dissatisfaction and delivery-issue intake
-- `/owner/login` — private owner dashboard sign-in
-- `/owner` — module counts, lead/outreach/payment/webhook/consultation tables, client draft approval queue, country-aware lead discovery, market validation, operational buttons, and audit history
-- `/healthz` — health check
-- `/webhooks/brevo` — delivery/bounce/complaint/unsubscribe events
-- `/webhooks/razorpay` — signed Razorpay event intake
+1. Add the schema change and tests; do not add production DDL to the startup or build command.
+2. Apply the schema to development with `python -m scripts.init_db` and verify the feature with the test suite and preview.
+3. Before a production release, use Replit Database → production → Settings to verify scheduled backups and a recent restore point. Replit-managed production supports scheduled backups and point-in-time restore.
+4. The user starts Publish. Replit compares development and production schemas and applies the schema diff as part of Publish. Review warnings and rename confirmations carefully: an unconfirmed rename can be interpreted as drop-and-add and may lose data. Schema changes may cause brief downtime. Do not select "overwrite data" unless the deliberate goal is to replace production data.
+5. After publishing, verify the published app's `/healthz` responds with HTTP 200, `status: ok`, and `database: postgresql`. This confirms the deployed process connected to its configured PostgreSQL database; a preview check is not production verification.
 
-## Important delivery controls
+Production schema changes must go through Replit Publish. Do not run `scripts.init_db` against production, add a custom production migration job, or put DDL in the deployment command.
 
-- The customer request route may generate a private draft, but never emails that file to the customer.
-- Owner approval is blocked unless the owner confirms the written scope/agreement and enters a Razorpay payment ID that matches a captured-payment record or a signed captured-payment webhook retained in the database. A typed reference alone is not enough.
-- A confirmed approval claims the request atomically before sending. An ambiguous provider timeout becomes `DELIVERY_UNCERTAIN`; check provider activity and reconcile it before retrying.
-- `Send one prepared email` sends at most one reviewed PREPARED outreach message per click and only after explicit confirmation. It is not automatically started by lead discovery.
-- The Razorpay capture webhook still needs a tested path linking a real payment to the right customer/request. The approval gate only verifies that the payment ID is present in this app’s captured records or signed webhook log; the owner must also verify payer, amount, and agreement in the Razorpay dashboard before approving. Payment-to-request/customer reconciliation remains a live acceptance test.
-- Configure Razorpay's webhook endpoint to the deployed `/webhooks/razorpay` path and use the webhook signing secret, not API key secret. Configure Brevo event authentication to match the provider's actual supported mechanism. Do not expose unauthenticated event endpoints.
+### Backups and rollback
 
-## End-to-end acceptance checklist
+- Before publishing a schema change, confirm a recent production restore point and scheduled backups in the Database tool. Replit documents daily scheduled backups and point-in-time restore for production databases.
+- Rolling back the app build does not roll back database schema or data. If data recovery is required, use Database → production → Settings to restore to a point before the change, then redeploy code compatible with the restored schema. Writes after the selected restore point will be lost.
+- Prefer additive and backward-compatible changes. Keep the prior app build until the new build and health checks pass.
 
-1. `/healthz` returns JSON with `status: ok`.
-2. A test consultation is persisted only after consent.
-3. A user chat prompt returns an HF answer or a clearly identified fallback response.
-4. A client request appears in `/owner`, and notification reaches the configured owner inbox.
-5. A generated HTML file is downloadable only after owner login.
-6. Approval without a written-scope confirmation or payment reference is blocked.
-7. A controlled test email receives the approved attachment once; check provider activity and a controlled recipient mailbox.
-8. Razorpay test-mode signed capture, duplicate event, and customer/payment reconciliation all pass.
-9. Bounce, complaint, unsubscribe, duplicate webhook and delivery-uncertain cases are exercised.
-10. Storage persistence, database backup/restore, production secrets, HTTPS and rollback are verified before real outreach volume increases.
+## Existing SQLite records
+
+Keep a protected copy of the SQLite file, then review the migration plan:
+
+```sh
+cp -p data/revenue_engine.db "$HOME/revenue_engine.sqlite.backup"
+python -m scripts.migrate_sqlite_to_postgres --sqlite-path data/revenue_engine.db
+```
+
+The default is read-only dry-run. After reviewing counts and verifying the development PostgreSQL database is empty, records can be copied there with:
+
+```sh
+python -m scripts.migrate_sqlite_to_postgres --sqlite-path data/revenue_engine.db --apply
+```
+
+The copy preserves IDs, copies supported tables in foreign-key order inside one transaction, and refuses a nonempty target or unsupported populated source data. It does not delete the SQLite file or copy directly to production. Replit provisions a new production database from development during first publish; subsequent publishes do not copy development records into an existing production database. Never use "overwrite data" as a way to merge records. Migrating into an already-existing production database requires a separate approved and backed-up data migration. No SQLite records were copied during this task.
+
+## Routes and operational safeguards
+
+- `/` — customer homepage
+- `/consultation` — consent-based consultation
+- `/client/request` — delivery/revision request intake
+- `/owner/login` and `/owner` — private operator dashboard
+- `/healthz` — checks the configured database and core schema; does not expose connection details
+- `/webhooks/brevo` and `/webhooks/razorpay` — authenticated/signed event endpoints
+
+The request route does not email drafts to customers. Owner approval requires written-scope confirmation and a captured-payment record; uncertain send outcomes require reconciliation before retry. Lead discovery does not send email. Preserve these gates in any release.
+
+## Acceptance gates before real use
+
+1. Run `python -m compileall -q app scripts tests` and `python -m unittest discover -s tests -v`; run PostgreSQL integration tests only when a real development `DATABASE_URL` is available.
+2. Verify preview `/healthz`, consultation consent persistence, owner-only draft access, payment approval gates, webhook authentication, suppression/opt-out behavior, and delivery-uncertain handling.
+3. Publish only through the Replit UI after reviewing the deployment type/cost, schema diff, backup status, Production Secrets, and privacy settings.
+4. After publish, verify `/healthz` on the published URL and confirm it reports PostgreSQL. Exercise controlled payment/email acceptance tests only with explicit approval and test-mode accounts.
+5. Production is not considered verified until the published URL, production database connection, backups, HTTPS routes, and rollback path have all been checked.

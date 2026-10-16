@@ -14,7 +14,7 @@ from typing import Any
 from flask import session
 
 from app.consultation import ConsultationStage
-from app.database import connect, init_db
+from app.database import connect
 
 
 def default_consultation() -> dict[str, Any]:
@@ -49,7 +49,6 @@ def get_current_consultation() -> dict[str, Any]:
     if not isinstance(public_id, str) or not public_id:
         return default_consultation()
 
-    init_db()
     with connect() as conn:
         row = conn.execute(
             "SELECT data_json FROM consultation_submissions WHERE public_id = ?",
@@ -86,7 +85,6 @@ def save_consultation(data: dict[str, Any]) -> None:
     if not data.get("consent_at"):
         data["consent_at"] = datetime.now(timezone.utc).isoformat()
 
-    init_db()
     with connect() as conn:
         conn.execute(
             """INSERT INTO consultation_submissions

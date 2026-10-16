@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import random
-import sqlite3
 import time
 from typing import Any, Callable, Protocol
 
@@ -62,7 +61,7 @@ def _provider_details(provider: str | None) -> tuple[str, SenderFunction, str | 
     raise ValueError(f"Unsupported email provider: {selected}")
 
 
-def _prepared_row(conn: sqlite3.Connection, outreach_id: int) -> sqlite3.Row | None:
+def _prepared_row(conn: Any, outreach_id: int) -> Any | None:
     return conn.execute(
         """
         SELECT id, lead_id, email, subject, body, attempt_number, status,
@@ -75,7 +74,7 @@ def _prepared_row(conn: sqlite3.Connection, outreach_id: int) -> sqlite3.Row | N
 
 
 def send_prepared(
-    conn: sqlite3.Connection,
+    conn: Any,
     outreach_id: int,
     *,
     dry_run: bool = True,
@@ -171,7 +170,7 @@ def send_prepared(
 
 
 def send_prepared_batch(
-    conn: sqlite3.Connection,
+    conn: Any,
     *,
     dry_run: bool = True,
     limit: int | None = None,

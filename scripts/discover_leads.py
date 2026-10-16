@@ -31,14 +31,15 @@ from __future__ import annotations
 
 import argparse
 import re
-import sqlite3
 import time
+from typing import Any
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests
 from bs4 import BeautifulSoup
 
 from app.config import settings
+from app.database import INTEGRITY_ERRORS, connect, init_db
 from app.lead_engine import (
     is_valid_public_email,
     normalize_email,
@@ -956,7 +957,7 @@ def lead_priority(
 # ============================================================
 
 def existing_place_ids(
-    conn: sqlite3.Connection,
+    conn: Any,
 ) -> set[str]:
 
     rows = conn.execute(
@@ -975,7 +976,7 @@ def existing_place_ids(
 
 
 def existing_emails(
-    conn: sqlite3.Connection,
+    conn: Any,
 ) -> set[str]:
 
     rows = conn.execute(
@@ -996,7 +997,7 @@ def existing_emails(
 
 
 def is_suppressed(
-    conn: sqlite3.Connection,
+    conn: Any,
     email: str,
 ) -> bool:
 
@@ -1018,7 +1019,7 @@ def is_suppressed(
 
 
 def save_lead(
-    conn: sqlite3.Connection,
+    conn: Any,
     lead: dict,
 ) -> int | None:
     """
@@ -1048,6 +1049,7 @@ def save_lead(
                 state
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 lead["place_id"],
@@ -1065,7 +1067,7 @@ def save_lead(
             ),
         )
 
-        lead_id = cursor.lastrowid
+        lead_id = cursor.fetchone()[0]
 
         conn.commit()
 
@@ -1085,7 +1087,7 @@ def save_lead(
 
         return lead_id
 
-    except sqlite3.IntegrityError:
+    except INTEGRITY_ERRORS:
 
         conn.rollback()
 
@@ -1100,7 +1102,7 @@ def process_place(
     api_key: str,
     query: str,
     place: dict,
-    conn: sqlite3.Connection,
+    conn: Any,
     known_place_ids: set[str],
     known_emails: set[str],
 ) -> dict | None:
@@ -1443,15 +1445,9 @@ def main() -> None:
     # Database
     # --------------------------------------------------------
 
-    from app.database import init_db
-
     init_db()
 
-    conn = sqlite3.connect(
-        settings.db_path
-    )
-
-    conn.row_factory = sqlite3.Row
+    conn = connect()
 
     try:
 

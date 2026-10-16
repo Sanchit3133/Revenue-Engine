@@ -10,7 +10,7 @@ from flask import Blueprint, render_template, request, session
 
 from app.ai_client import generate_landing_page_draft
 from app.config import settings
-from app.database import connect, init_db
+from app.database import connect
 from app.notifications import notify_owner
 from app.services import get_service
 from app.web.session_state import get_current_consultation
@@ -86,7 +86,6 @@ def client_request():
             elif request_type in {"revision", "not_satisfied", "delivery_issue"} and not related_ref:
                 error = "Enter the request reference for the file or service you need help with."
             elif request_type in {"revision", "not_satisfied", "delivery_issue"}:
-                init_db()
                 with connect() as conn:
                     previous_owner = conn.execute(
                         "SELECT email FROM client_requests WHERE public_id = ?",
@@ -95,7 +94,6 @@ def client_request():
                 if previous_owner is None or previous_owner["email"].strip().lower() != email:
                     error = "That request reference was not found for this email address. Check the reference and email, then try again."
             if not error:
-                init_db()
                 public_id = secrets.token_hex(12)
                 created_at = datetime.now(timezone.utc).isoformat()
                 service_key = str(consultation.get("service_key") or "LANDING_PAGE").strip().upper()
@@ -145,7 +143,6 @@ def client_request():
                             )
                     filename, content, source, diagnostic = generate_landing_page_draft(details)
 
-                init_db()
                 with connect() as conn:
                     conn.execute(
                         """INSERT INTO client_requests

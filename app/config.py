@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -36,6 +36,8 @@ def _optional_env(name: str) -> str | None:
 class Settings:
     environment: str
     db_path: Path
+    database_url: str | None = field(repr=False)
+    database_backend: str
     landing_page_url: str
     target_market_country: str
     target_market_language: str
@@ -80,9 +82,23 @@ def load_settings() -> Settings:
         supported = ", ".join(sorted(SUPPORTED_EMAIL_PROVIDERS))
         raise ValueError(f"EMAIL_PROVIDER must be one of: {supported}")
 
+    environment = os.getenv("ENVIRONMENT", "development").strip().lower()
+    if os.getenv("REPL_DEPLOYMENT") == "1":
+        environment = "production"
+    database_backend = os.getenv("DATABASE_BACKEND", "auto").strip().lower()
+    if database_backend not in {"auto", "sqlite", "postgresql"}:
+        raise ValueError("DATABASE_BACKEND must be auto, sqlite, or postgresql")
+    if environment == "production" and database_backend == "sqlite":
+        raise ValueError("SQLite is not allowed as the production database backend")
+    database_url = _optional_env("DATABASE_URL")
+    if environment == "production" and not database_url:
+        raise ValueError("DATABASE_URL is required in production")
+
     return Settings(
-        environment=os.getenv("ENVIRONMENT", "development").strip().lower(),
+        environment=environment,
         db_path=Path(os.getenv("OUTREACH_DB", "data/revenue_engine.db")),
+        database_url=database_url,
+        database_backend=database_backend,
         landing_page_url=os.getenv(
             "LANDING_PAGE_URL", DEFAULT_LANDING_PAGE_URL
         ).strip(),

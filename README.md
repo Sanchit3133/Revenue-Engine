@@ -56,14 +56,14 @@ This repository is a conservative workflow for turning publicly sourced business
 ### Website consultation
 
 - The Flask consultation form now requests a business email and explicit consent to use submitted details to respond.
-- Once consent is given, consultation progress is stored in SQLite instead of only in a browser session.
+- Once consent is given, consultation progress is stored in the configured database instead of only in a browser session.
 - The static GitHub Pages site cannot execute Flask routes itself. Deploy the Flask application separately on a public HTTPS host and point forms/webhooks to the deployed service where applicable.
 
 ### Database and app security
 
-- SQLite schema migrations are additive and preserve existing lead/outreach history.
-- `/healthz` provides a simple service health response.
-- Production mode requires `FLASK_SECRET_KEY`, sets secure/HTTP-only session cookies, and uses the `wsgi.py` entry point. Do not run Flask's development server in production.
+- PostgreSQL is the Replit preview/published backend; local development and isolated tests can use SQLite. Schema changes are additive and preserve existing lead/outreach history.
+- `/healthz` verifies database connectivity and the core schema, and reports the active backend without exposing connection details.
+- Production mode requires `FLASK_SECRET_KEY`, sets secure/HTTP-only session cookies, requires PostgreSQL, and uses the `wsgi.py` entry point. Do not run Flask's development server in production.
 
 ## Setup in Codespaces
 
@@ -77,7 +77,7 @@ cp .env.example .env
 nano .env
 ```
 
-Keep the existing `.env` if already present—do not overwrite API keys by recopying the example. Store provider keys only in `.env` or your hosting secret manager. `.env` must remain ignored by Git.
+Keep the existing `.env` if already present—do not overwrite API keys by recopying the example. For local development, keep provider keys only in `.env`; in Replit, use the appropriate environment's Secrets pane. `.env` must remain ignored by Git. Replit supplies a separate managed `DATABASE_URL` for preview and published environments; do not copy either URL into a file.
 
 Required minimum settings for Brevo sending:
 
@@ -145,7 +145,17 @@ For local development only:
 python -m scripts.run_web
 ```
 
-For a production host, configure `ENVIRONMENT=production`, a long random `FLASK_SECRET_KEY`, the correct DB path and provider secrets in the host's secret manager, then run a production WSGI server (for example, install Gunicorn and run `gunicorn --bind 0.0.0.0:$PORT wsgi:app`). Ensure SQLite storage is persistent and backed up. The app requires a public HTTPS URL for external webhooks.
+On Replit, the preview workflow listens on port 5000. The published process uses the production WSGI command in `Procfile`, which binds to Replit's `$PORT`. Replit creates a separate production PostgreSQL database and injects its `DATABASE_URL` into the deployment; do not assume it is the preview database or copy its connection string into source. Add `FLASK_SECRET_KEY`, `OWNER_DASHBOARD_PASSWORD`, and only the provider credentials needed for explicitly enabled features through Production Secrets.
+
+### Replit schema and data release
+
+1. `app/database.py` is the schema source. Run `python -m scripts.init_db` against the development database; the configured `scripts/post-merge.sh` also applies additive schema changes after a task merge. No DDL runs in a web worker or at app startup.
+2. Run the complete tests and verify the preview's `/healthz`.
+3. Before publishing, verify a recent production restore point and scheduled backups in the Database tool's production Settings.
+4. The user starts Publish. Replit compares development and production schema and applies the schema diff. Review rename prompts and warnings; schema changes may briefly interrupt service. Do not select overwrite-data unless replacing production data is intended.
+5. After publishing, check the published app's `/healthz` returns `status: ok` and `database: postgresql`. Code rollback does not revert database changes; use the production Database tool's point-in-time restore if data recovery is needed, accounting for writes after the restore point.
+
+For a SQLite-to-PostgreSQL data move, first back up the SQLite file and review the dry run described in [`docs/database-postgresql.md`](docs/database-postgresql.md). The explicit `--apply` path copies only to an empty development PostgreSQL database, preserving IDs and the source SQLite file. A newly provisioned production database is created from development at first publish; later publishes do not copy development rows into existing production. The current project is not published, and no SQLite records were migrated by this change.
 
 ## Launch gates still requiring external verification
 

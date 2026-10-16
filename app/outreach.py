@@ -399,6 +399,7 @@ def prepare_first_contact(
             status
         )
         VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (
             lead_id,
@@ -410,12 +411,13 @@ def prepare_first_contact(
         ),
     )
 
+    outreach_id = cursor.fetchone()[0]
     conn.commit()
 
     return OutreachResult(
         allowed=True,
         reason="prepared",
-        outreach_id=cursor.lastrowid,
+        outreach_id=outreach_id,
         message=message,
         attempt_number=1,
     )
@@ -516,6 +518,7 @@ def prepare_follow_up(
             status
         )
         VALUES (?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (
             lead_id,
@@ -527,12 +530,13 @@ def prepare_follow_up(
         ),
     )
 
+    outreach_id = cursor.fetchone()[0]
     conn.commit()
 
     return OutreachResult(
         allowed=True,
         reason="prepared",
-        outreach_id=cursor.lastrowid,
+        outreach_id=outreach_id,
         message=message,
         attempt_number=attempt_number,
     )
@@ -643,6 +647,7 @@ def prepare_failed_retry(
             lead_id, email, subject, body, attempt_number, status,
             retry_of_outreach_id
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        RETURNING id
         """,
         (
             int(source["lead_id"]),
@@ -654,7 +659,7 @@ def prepare_failed_retry(
             outreach_id,
         ),
     )
-    new_id = int(cursor.lastrowid)
+    new_id = int(cursor.fetchone()[0])
     _record_outreach_event(
         conn,
         outreach_id,

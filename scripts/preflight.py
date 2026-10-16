@@ -4,7 +4,7 @@ import argparse
 import sys
 import requests
 from app.config import settings
-from app.database import connect, init_db
+from app.database import connect, get_database_backend, health_check
 
 
 def main() -> None:
@@ -14,7 +14,11 @@ def main() -> None:
     errors = []
     print("REVENUE ENGINE PREFLIGHT")
     print(f"Environment: {settings.environment}")
-    print(f"Database path: {settings.db_path}")
+    try:
+        backend = get_database_backend()
+        print(f"Database backend: {backend}")
+    except Exception as exc:
+        errors.append(f"Database configuration failed: {type(exc).__name__}")
     print(f"Landing page: {settings.landing_page_url}")
     print(f"Email provider: {settings.email_provider}")
 
@@ -36,16 +40,13 @@ def main() -> None:
     if settings.environment == "production" and not settings.flask_secret_key:
         errors.append("FLASK_SECRET_KEY is required in production")
     try:
-        init_db()
+        backend = health_check()
         with connect() as conn:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
             leads = conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0]
             outreach = conn.execute("SELECT COUNT(*) FROM outreach").fetchone()[0]
-        print("Database integrity:", integrity)
+        print("Database connection:", backend)
         print("Lead records:", leads)
         print("Outreach records:", outreach)
-        if integrity != "ok":
-            errors.append("Database integrity check failed")
     except Exception as exc:
         errors.append(f"Database check failed: {type(exc).__name__}")
 
