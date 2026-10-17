@@ -31,6 +31,7 @@ jobs:
           DATABASE_URL: ${{ secrets.REVENUE_ENGINE_AUTOMATION_DATABASE_URL }}
           BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
           BREVO_SENDER: ${{ secrets.BREVO_SENDER }}
+          PUBLIC_APP_URL: ${{ secrets.PUBLIC_APP_URL }}
         run: |
           set -euo pipefail
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$CONFIRMATION" != "RUN_AUTOMATED_CYCLE" ]; then
@@ -49,6 +50,10 @@ jobs:
             echo "::error::Missing BREVO_API_KEY or BREVO_SENDER Actions secret. No live send is allowed."
             exit 1
           fi
+          case "$PUBLIC_APP_URL" in
+            https://*) ;;
+            *) echo "::error::PUBLIC_APP_URL must be a verified HTTPS Replit app URL."; exit 1 ;;
+          esac
           echo "Preflight passed. Secret values are not displayed."
 
       - name: Check out the selected workflow branch
@@ -66,8 +71,7 @@ jobs:
         run: python -m compileall -q app scripts tests
 
       - name: Test campaign, suppression, scheduling and source safeguards
-        run: |
-          python -m unittest             tests.test_followup_scheduler             tests.test_overture_discovery             tests.test_recipient_uniqueness             tests.test_outreach             tests.test_campaign_sender             tests.test_reply_processor             tests.test_webhook_processing -v
+        run: python -m unittest tests.test_followup_scheduler tests.test_overture_discovery tests.test_recipient_uniqueness tests.test_outreach tests.test_campaign_sender tests.test_reply_processor tests.test_webhook_processing -v
 
       - name: Run the bounded live cycle
         env:
