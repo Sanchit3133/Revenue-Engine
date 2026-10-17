@@ -80,15 +80,18 @@ def _send_one(conn, outreach_id: int, sent_this_run: int) -> tuple[bool, str]:
     return bool(result.success), str(result.reason)[:160]
 
 
-def _process_due_reminders(conn, *, max_sends: int, already_sent: int) -> tuple[int, int]:
+def _process_due_reminders(
+    conn, *, max_sends: int, already_sent: int, consecutive_failures: int = 0
+) -> tuple[int, int, int, bool]:
     """Prepare and deliver overdue reminders before any new first contacts."""
     release_stale_claims(conn, age_minutes=60)
     capacity = min(max_sends - already_sent, _daily_capacity(conn))
     if capacity <= 0:
-        return 0, 0
+        return 0, 0, consecutive_failures, False
     due = claim_due_follow_ups(conn, limit=min(25, capacity))
     accepted = 0
     failed = 0
+    stopped = False
     for record in due:
         schedule_id = int(record["id"])
         lead_id = int(record["lead_id"])
@@ -104,10 +107,15 @@ def _process_due_reminders(conn, *, max_sends: int, already_sent: int) -> tuple[
             if prior is None:
                 finish_follow_up(conn, schedule_id, accepted=False, reason="prepared_outreach_missing")
                 failed += 1
+                consecutive_failures += 1
+                stopped = _failure_breaker_open(consecutive_failures)
+                if stopped:
+                    break
                 continue
             prior_status = str(prior["status"])
             if prior_status == "SENT":
                 finish_follow_up(conn, schedule_id, accepted=True, reason="reconciled_already_sent")
+                consecutive_failures = 0
                 continue
             if prior_status != "PREPARED":
                 reason = (
@@ -117,6 +125,10 @@ def _process_due_reminders(conn, *, max_sends: int, already_sent: int) -> tuple[
                 )
                 finish_follow_up(conn, schedule_id, accepted=False, reason=reason)
                 failed += 1
+                consecutive_failures += 1
+                stopped = _failure_breaker_open(consecutive_failures)
+                if stopped:
+                    break
                 continue
             outreach_id = int(existing_outreach_id)
         else:
@@ -138,18 +150,25 @@ def _process_due_reminders(conn, *, max_sends: int, already_sent: int) -> tuple[
             # The row no longer belongs to this worker. Do not send it.
             continue
         success, reason = _send_one(conn, outreach_id, already_sent + accepted + failed)
-        finish_follow_up(conn, schedule_id, accepted=success, reason=reason)
         if success:
             accepted += 1
+            consecutive_failures = 0
         else:
             failed += 1
-    return accepted, failed
+            consecutive_failures += 1
+        finish_follow_up(conn, schedule_id, accepted=success, reason=reason)
+        if _failure_breaker_open(consecutive_failures):
+            stopped = True
+            break
+    return accepted, failed, consecutive_failures, stopped
 
 
-def _prepare_and_send_first_contacts(conn, *, max_sends: int, already_sent: int) -> tuple[int, int, int]:
+def _prepare_and_send_first_contacts(
+    conn, *, max_sends: int, already_sent: int, consecutive_failures: int = 0
+) -> tuple[int, int, int, int, bool]:
     remaining = min(max_sends - already_sent, _daily_capacity(conn))
     if remaining <= 0:
-        return 0, 0, 0
+        return 0, 0, 0, consecutive_failures, False
     rows = conn.execute(
         """SELECT l.id FROM leads l
            WHERE l.state = 'QUALIFIED'
@@ -159,6 +178,7 @@ def _prepare_and_send_first_contacts(conn, *, max_sends: int, already_sent: int)
         (min(remaining, 25),),
     ).fetchall()
     accepted = failed = prepared = 0
+    stopped = False
     for row in rows:
         if accepted + failed >= remaining or _daily_capacity(conn) <= 0:
             break
@@ -171,12 +191,22 @@ def _prepare_and_send_first_contacts(conn, *, max_sends: int, already_sent: int)
         if not result.allowed or result.outreach_id is None:
             continue
         prepared += 1
-        success, reason = _send_one(conn, result.outreach_id, already_sent + accepted + failed)
+        success, _reason = _send_one(conn, result.outreach_id, already_sent + accepted + failed)
         if success:
             accepted += 1
+            consecutive_failures = 0
         else:
             failed += 1
-    return prepared, accepted, failed
+            consecutive_failures += 1
+        if _failure_breaker_open(consecutive_failures):
+            stopped = True
+            break
+    return prepared, accepted, failed, consecutive_failures, stopped
+
+
+def _failure_breaker_open(consecutive_failures: int) -> bool:
+    limit = int(settings.max_consecutive_failures)
+    return limit > 0 and consecutive_failures >= limit
 
 
 def _record_worker_run(conn, *, status: str, summary: dict) -> None:
@@ -243,16 +273,23 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
             return summary
 
         run_limit = min(int(settings.campaign_limit), int(settings.daily_limit))
-        reminders_ok, reminders_failed = _process_due_reminders(
+        reminders_ok, reminders_failed, consecutive_failures, breaker_open = _process_due_reminders(
             conn, max_sends=run_limit, already_sent=0
         )
         summary["accepted_by_provider"] += reminders_ok
         summary["failed_or_blocked"] += reminders_failed
-        prepared, first_ok, first_failed = _prepare_and_send_first_contacts(
-            conn,
-            max_sends=run_limit,
-            already_sent=reminders_ok + reminders_failed,
-        )
+        if breaker_open:
+            summary["live_send_block"] = "consecutive_failure_guard"
+            prepared, first_ok, first_failed = 0, 0, 0
+        else:
+            prepared, first_ok, first_failed, consecutive_failures, breaker_open = _prepare_and_send_first_contacts(
+                conn,
+                max_sends=run_limit,
+                already_sent=reminders_ok + reminders_failed,
+                consecutive_failures=consecutive_failures,
+            )
+            if breaker_open:
+                summary["live_send_block"] = "consecutive_failure_guard"
         summary["prepared"] = prepared
         summary["accepted_by_provider"] += first_ok
         summary["failed_or_blocked"] += first_failed
