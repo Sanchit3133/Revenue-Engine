@@ -272,6 +272,76 @@ class TestMultiCityDiscovery(unittest.TestCase):
         self.assertEqual(len(ordered), len(SEGMENTS))
         self.assertEqual({item[0] for item in ordered}, {item[0] for item in SEGMENTS})
 
+    def test_website_check_budget_is_distributed_across_three_cities(self):
+        cities = [
+            City("City One", "IN", 20.0, 78.0, 100000),
+            City("City Two", "IN", 21.0, 79.0, 100000),
+            City("City Three", "IN", 22.0, 80.0, 100000),
+        ]
+
+        def features_for(prefix):
+            return [
+                {
+                    "properties": {
+                        "id": f"{prefix}-{i}",
+                        "names": {"primary": f"Test Coaching Institute {prefix} {i}"},
+                        "websites": [f"https://academy-{prefix}-{i}.in/"],
+                        "confidence": 0.95,
+                        "taxonomy": {"primary": "education coaching"},
+                        "sources": [{"dataset": "meta", "license": "CDLA-Permissive-2.0"}],
+                    }
+                }
+                for i in range(10)
+            ]
+
+        class EmptyCursor:
+            def fetchall(self):
+                return []
+
+        class ReadOnlyFakeConnection:
+            def execute(self, _query, _params=()):
+                return EmptyCursor()
+
+        class StableRandom:
+            def shuffle(self, values):
+                return None
+
+            def choices(self, population, weights=None, k=1):
+                return [population[0]]
+
+        with (
+            patch(
+                "scripts.overture_discovery._eligible_cities",
+                return_value=(cities, "India"),
+            ),
+            patch(
+                "scripts.overture_discovery.download_city_places",
+                side_effect=[
+                    features_for("one"),
+                    features_for("two"),
+                    features_for("three"),
+                ],
+            ) as download,
+            patch(
+                "scripts.overture_discovery.find_official_email",
+                return_value=("", "no_public_email_found"),
+            ) as email_lookup,
+        ):
+            result = discover_and_persist(
+                ReadOnlyFakeConnection(),
+                country="India",
+                max_new=5,
+                rng=StableRandom(),
+                persist=False,
+            )
+
+        self.assertEqual(download.call_count, 3)
+        self.assertEqual(email_lookup.call_count, 15)
+        self.assertEqual(result["cities_attempted"], 3)
+        self.assertEqual(result["site_checks"], 15)
+        self.assertEqual(result["qualified"], 0)
+        self.assertEqual(result["saved"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
