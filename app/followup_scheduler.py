@@ -32,6 +32,7 @@ def schedule_next_follow_up(
     source_outreach_id: int,
     accepted_attempt_number: int,
     sent_at: datetime | None = None,
+    commit: bool = True,
 ) -> bool:
     """Schedule a reminder after a provider-accepted message.
 
@@ -51,11 +52,12 @@ def schedule_next_follow_up(
            ON CONFLICT(lead_id, attempt_number) DO NOTHING""",
         (int(lead_id), int(source_outreach_id), next_attempt, due_at, SCHEDULED),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cursor.rowcount == 1
 
 
-def cancel_follow_ups(conn: Any, lead_id: int, *, reason: str) -> int:
+def cancel_follow_ups(conn: Any, lead_id: int, *, reason: str, commit: bool = True) -> int:
     """Cancel any reminders not already completed for a lead."""
     cursor = conn.execute(
         """UPDATE follow_up_schedule
@@ -63,7 +65,8 @@ def cancel_follow_ups(conn: Any, lead_id: int, *, reason: str) -> int:
            WHERE lead_id = ? AND status IN (?, ?, ?)""",
         (CANCELLED, str(reason)[:200], int(lead_id), SCHEDULED, CLAIMED, PREPARED),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return int(cursor.rowcount or 0)
 
 
