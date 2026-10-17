@@ -730,13 +730,24 @@ def mark_sent(
     )
 
     lead = _lead_row(conn, int(row["lead_id"]))
-    if lead is not None and lead["state"] == LeadState.QUALIFIED.value:
-        transition(
-            conn,
-            int(row["lead_id"]),
-            LeadState.CONTACTED,
-            reason="outreach_sent",
-        )
+    can_schedule_no_response_reminder = False
+    if lead is not None:
+        current_state = str(lead["state"])
+        if current_state == LeadState.QUALIFIED.value:
+            # Participate in this transaction so the state, SENT row, event
+            # and reminder schedule either commit together or roll back.
+            transition(
+                conn,
+                int(row["lead_id"]),
+                LeadState.CONTACTED,
+                reason="outreach_sent",
+                commit=False,
+            )
+            can_schedule_no_response_reminder = True
+        elif current_state in {LeadState.CONTACTED.value, LeadState.DELIVERED.value}:
+            can_schedule_no_response_reminder = True
+        # Never regress REPLIED/INTERESTED/BUDGET_DISCLOSED/terminal states
+        # if a webhook/reply was processed while the provider request ran.
 
     _record_outreach_event(
         conn,
@@ -746,16 +757,17 @@ def mark_sent(
         reason="accepted",
         details={"provider_message_id": message_id},
     )
-    # Schedule reminders from the same transaction as the provider-accepted state.
-    # Attempts 1 and 2 schedule follow-ups; attempt 3 schedules nothing further.
-    schedule_next_follow_up(
-        conn,
-        lead_id=int(row["lead_id"]),
-        source_outreach_id=int(row["id"]),
-        accepted_attempt_number=int(row["attempt_number"]),
-        sent_at=datetime.fromisoformat(sent_at),
-        commit=False,
-    )
+    # Only schedule no-response follow-ups if the lead still has a no-response
+    # state. Attempts 1 and 2 schedule one follow-up; attempt 3 schedules none.
+    if can_schedule_no_response_reminder:
+        schedule_next_follow_up(
+            conn,
+            lead_id=int(row["lead_id"]),
+            source_outreach_id=int(row["id"]),
+            accepted_attempt_number=int(row["attempt_number"]),
+            sent_at=datetime.fromisoformat(sent_at),
+            commit=False,
+        )
     conn.commit()
     return True
 
