@@ -91,22 +91,52 @@ def _process_due_reminders(conn, *, max_sends: int, already_sent: int) -> tuple[
     for record in due:
         schedule_id = int(record["id"])
         lead_id = int(record["lead_id"])
-        result = prepare_follow_up(
-            conn,
-            lead_id,
-            daily_limit=int(settings.daily_limit),
-            domain_cooldown=int(settings.domain_cooldown),
-        )
-        if not result.allowed or result.outreach_id is None:
-            if result.reason in TRANSIENT_PREPARATION_REASONS:
-                release_claim(conn, schedule_id, reason=result.reason)
-            else:
-                cancel_follow_ups(conn, lead_id, reason=result.reason or "follow_up_ineligible")
-            continue
-        if not mark_follow_up_prepared(conn, schedule_id, result.outreach_id):
+        existing_outreach_id = record.get("prepared_outreach_id")
+
+        if existing_outreach_id is not None:
+            # Recover the exact previously prepared message instead of creating
+            # a new sales attempt. Anything other than PREPARED is never resent.
+            prior = conn.execute(
+                "SELECT status FROM outreach WHERE id = ?",
+                (int(existing_outreach_id),),
+            ).fetchone()
+            if prior is None:
+                finish_follow_up(conn, schedule_id, accepted=False, reason="prepared_outreach_missing")
+                failed += 1
+                continue
+            prior_status = str(prior["status"])
+            if prior_status == "SENT":
+                finish_follow_up(conn, schedule_id, accepted=True, reason="reconciled_already_sent")
+                continue
+            if prior_status != "PREPARED":
+                reason = (
+                    "ambiguous_provider_state_after_crash"
+                    if prior_status == "SENDING"
+                    else "prepared_outreach_not_sendable"
+                )
+                finish_follow_up(conn, schedule_id, accepted=False, reason=reason)
+                failed += 1
+                continue
+            outreach_id = int(existing_outreach_id)
+        else:
+            result = prepare_follow_up(
+                conn,
+                lead_id,
+                daily_limit=int(settings.daily_limit),
+                domain_cooldown=int(settings.domain_cooldown),
+            )
+            if not result.allowed or result.outreach_id is None:
+                if result.reason in TRANSIENT_PREPARATION_REASONS:
+                    release_claim(conn, schedule_id, reason=result.reason)
+                else:
+                    cancel_follow_ups(conn, lead_id, reason=result.reason or "follow_up_ineligible")
+                continue
+            outreach_id = int(result.outreach_id)
+
+        if not mark_follow_up_prepared(conn, schedule_id, outreach_id):
             # The row no longer belongs to this worker. Do not send it.
             continue
-        success, reason = _send_one(conn, result.outreach_id, already_sent + accepted + failed)
+        success, reason = _send_one(conn, outreach_id, already_sent + accepted + failed)
         finish_follow_up(conn, schedule_id, accepted=success, reason=reason)
         if success:
             accepted += 1
