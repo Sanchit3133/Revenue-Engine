@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS follow_up_schedule (
     attempt_number INTEGER NOT NULL,
     due_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    claimed_at TEXT,
     prepared_outreach_id INTEGER,
     cancellation_reason TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
