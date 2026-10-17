@@ -129,6 +129,17 @@ def send_prepared(
             provider=selected_provider,
         )
 
+    # Atomic claim prevents two overlapping workers from submitting the same
+    # prepared message. If the worker crashes during provider I/O, the SENDING
+    # record is deliberately not auto-retried because acceptance may be unknown.
+    claim = conn.execute(
+        "UPDATE outreach SET status = 'SENDING' WHERE id = ? AND status = ?",
+        (outreach_id, PREPARED_STATUS),
+    )
+    conn.commit()
+    if claim.rowcount != 1:
+        return DeliveryResult(outreach_id, False, False, "outreach_claim_lost", provider=selected_provider)
+
     try:
         resolved_provider, resolved_sender_function, default_key, default_sender, default_reply = _provider_details(selected_provider)
     except ValueError as exc:
@@ -141,12 +152,25 @@ def send_prepared(
     effective_sender = sender if sender is not None else default_sender
     effective_reply = reply_to if reply_to is not None else default_reply
 
-    result = function(
-        message,
-        api_key=effective_key,
-        sender=effective_sender,
-        reply_to=effective_reply,
-    )
+    try:
+        result = function(
+            message,
+            api_key=effective_key,
+            sender=effective_sender,
+            reply_to=effective_reply,
+        )
+    except Exception as exc:
+        # The external outcome may be ambiguous; record the failure class and
+        # do not retry automatically. Owner reconciliation is required.
+        mark_failed(
+            conn, outreach_id, provider=resolved_provider,
+            reason="provider_exception:" + type(exc).__name__,
+        )
+        return DeliveryResult(
+            outreach_id, False, False,
+            "provider_exception:" + type(exc).__name__,
+            provider=resolved_provider,
+        )
 
     if result.success:
         state_updated = mark_sent(
