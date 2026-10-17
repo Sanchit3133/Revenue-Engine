@@ -26,9 +26,11 @@ from scripts.overture_source import (
     GEONAMES_CITIES_URL,
 )
 
-REQUEST_TIMEOUT = 15
+REQUEST_TIMEOUT = 8
+ROBOTS_TIMEOUT = 5
 MAX_PAGE_BYTES = 1_500_000
 MAX_PAGES_PER_SITE = 5
+MAX_SITE_CHECKS_PER_RUN = 15
 MAX_NEW_LEADS = 5
 BOT_TOKEN = "RevenueEngineProspectingBot"
 HEADERS = {"User-Agent": "RevenueEngineProspectingBot/1.0 (+https://sanchit-agarwal.me/257-2/)"}
@@ -235,7 +237,7 @@ def _robots(base: str) -> RobotFileParser | None:
         with requests.get(
             robots_url,
             headers=HEADERS,
-            timeout=10,
+            timeout=ROBOTS_TIMEOUT,
             stream=True,
             allow_redirects=False,
         ) as response:
@@ -390,12 +392,17 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
     city, canonical_country = choose_random_city(country, rng=rng)
     segment, query, keywords = choose_random_segment(rng=rng)
     features = download_city_places(city)
+    # Do not inspect the full place dump in one run. Shuffle its records and
+    # check a bounded sample so one slow city cannot exceed the worker timeout.
+    (rng or random.SystemRandom()).shuffle(features)
     known_places = {row["place_id"] for row in conn.execute("SELECT place_id FROM leads WHERE place_id IS NOT NULL").fetchall() if row["place_id"]}
     known_emails = {normalize_email(row["email"]) for row in conn.execute("SELECT email FROM leads WHERE email IS NOT NULL AND trim(email) <> ''").fetchall() if row["email"]}
     suppressed = {normalize_email(row["email"]) for row in conn.execute("SELECT email FROM suppressions").fetchall() if row["email"]}
     seen_ids, seen_emails, candidates = set(), set(), []
     stats = {"places_seen": len(features), "site_checks": 0, "published_emails_found": 0, "qualified": 0, "saved": 0}
     for raw in features:
+        if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN:
+            break
         place = normalize_feature(raw)
         if not place or place["place_id"] in known_places or place["place_id"] in seen_ids:
             continue
