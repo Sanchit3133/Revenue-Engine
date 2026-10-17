@@ -1,0 +1,96 @@
+name: Revenue Engine production database read-only check
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type READ_ONLY_CHECK to confirm this workflow must not change data
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  production-database-check:
+    if: github.repository == 'Sanchit3133/Revenue-Engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require explicit read-only confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "READ_ONLY_CHECK" ]; then
+            echo "::error::Confirmation did not match. No database connection was attempted."
+            exit 1
+          fi
+
+      - name: Require production database secret
+        env:
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Add the repository Actions secret REVENUE_ENGINE_PRODUCTION_DATABASE_URL using the connection string from Replit Database > Production Database > Settings."
+            exit 1
+          fi
+          echo "Production database secret is configured (value not shown)."
+
+      - name: Install PostgreSQL driver
+        run: python -m pip install --disable-pip-version-check "psycopg[binary]>=3.2,<4"
+
+      - name: Connect in read-only mode and check required tables
+        env:
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import psycopg
+
+          required = {"leads", "outreach", "suppressions", "market_validations"}
+          conn = None
+          try:
+              conn = psycopg.connect(
+                  os.environ["DATABASE_URL"],
+                  connect_timeout=10,
+                  options="-c default_transaction_read_only=on",
+                  application_name="revenue-engine-github-readonly-check",
+              )
+              with conn.cursor() as cursor:
+                  cursor.execute("SHOW transaction_read_only")
+                  mode = str(cursor.fetchone()[0]).lower()
+                  if mode != "on":
+                      print("ERROR: PostgreSQL session did not enter read-only mode.")
+                      sys.exit(1)
+
+                  cursor.execute("SELECT 1")
+                  if cursor.fetchone()[0] != 1:
+                      print("ERROR: Database connectivity query failed.")
+                      sys.exit(1)
+
+                  cursor.execute(
+                      """
+                      SELECT table_name
+                      FROM information_schema.tables
+                      WHERE table_schema = 'public'
+                        AND table_type = 'BASE TABLE'
+                      """
+                  )
+                  tables = {row[0] for row in cursor.fetchall()}
+                  missing = sorted(required - tables)
+
+              print("Production database connection: OK")
+              print("Session read-only mode: ON")
+              print(f"Required Revenue Engine tables present: {len(required) - len(missing)}/{len(required)}")
+              if missing:
+                  print("Missing required tables: " + ", ".join(missing))
+                  sys.exit(1)
+              print("Read-only database check passed. No rows or schema were changed.")
+          except Exception as exc:
+              # Do not print the exception: database driver errors can expose connection details.
+              print("ERROR: Connection or read-only schema check failed (" + type(exc).__name__ + ").")
+              sys.exit(1)
+          finally:
+              if conn is not None:
+                  conn.close()
+          PY
