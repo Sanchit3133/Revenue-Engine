@@ -99,6 +99,30 @@ def send_prepared(
         return DeliveryResult(outreach_id, False, dry_run, "outreach_not_prepared", provider=selected_provider)
 
     message = Message(email=row["email"], subject=row["subject"], body=row["body"])
+
+    # Re-check recipient suppression and lead status immediately before the
+    # external request. A reply/opt-out can arrive after message preparation.
+    lead = conn.execute("SELECT state FROM leads WHERE id = ?", (row["lead_id"],)).fetchone()
+    if lead is None:
+        if not dry_run:
+            mark_failed(conn, outreach_id, provider=selected_provider, reason="blocked_before_send:lead_missing")
+        return DeliveryResult(outreach_id, False, dry_run, "blocked_before_send:lead_missing", provider=selected_provider)
+    suppressed = conn.execute(
+        "SELECT 1 FROM suppressions WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1",
+        (row["email"],),
+    ).fetchone()
+    attempt = int(row["attempt_number"])
+    allowed_states = {"QUALIFIED"} if attempt == 1 else {"CONTACTED", "DELIVERED"}
+    if suppressed:
+        if not dry_run:
+            mark_failed(conn, outreach_id, provider=selected_provider, reason="blocked_before_send:recipient_suppressed")
+        return DeliveryResult(outreach_id, False, dry_run, "blocked_before_send:recipient_suppressed", provider=selected_provider)
+    if str(lead["state"]) not in allowed_states:
+        reason = "blocked_before_send:lead_state_" + str(lead["state"])
+        if not dry_run:
+            mark_failed(conn, outreach_id, provider=selected_provider, reason=reason)
+        return DeliveryResult(outreach_id, False, dry_run, reason, provider=selected_provider)
+
     if dry_run:
         return DeliveryResult(
             outreach_id,
@@ -113,6 +137,33 @@ def send_prepared(
     except ValueError as exc:
         return DeliveryResult(outreach_id, False, False, str(exc), provider=selected_provider)
 
+    # Atomic claim prevents two overlapping workers from submitting the same
+    # prepared message. A crash during provider I/O is deliberately not auto-retried.
+    claim = conn.execute(
+        "UPDATE outreach SET status = 'SENDING' WHERE id = ? AND status = ?",
+        (outreach_id, PREPARED_STATUS),
+    )
+    conn.commit()
+    if claim.rowcount != 1:
+        return DeliveryResult(outreach_id, False, False, "outreach_claim_lost", provider=selected_provider)
+
+    # One last persisted check after claiming and immediately before provider I/O.
+    # In particular, a reply/STOP may have arrived while this row was prepared.
+    lead = conn.execute("SELECT state FROM leads WHERE id = ?", (row["lead_id"],)).fetchone()
+    suppressed = conn.execute(
+        "SELECT 1 FROM suppressions WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1",
+        (row["email"],),
+    ).fetchone()
+    if lead is None or suppressed or str(lead["state"]) not in allowed_states:
+        if lead is None:
+            block_reason = "blocked_after_claim:lead_missing"
+        elif suppressed:
+            block_reason = "blocked_after_claim:recipient_suppressed"
+        else:
+            block_reason = "blocked_after_claim:lead_state_" + str(lead["state"])
+        mark_failed(conn, outreach_id, provider=selected_provider, reason=block_reason)
+        return DeliveryResult(outreach_id, False, False, block_reason, provider=selected_provider)
+
     function = sender_function or resolved_sender_function
     # Explicit parameters are convenient for tests and one-off controlled calls.
     # Otherwise use only the credentials/settings for the selected provider.
@@ -120,12 +171,25 @@ def send_prepared(
     effective_sender = sender if sender is not None else default_sender
     effective_reply = reply_to if reply_to is not None else default_reply
 
-    result = function(
-        message,
-        api_key=effective_key,
-        sender=effective_sender,
-        reply_to=effective_reply,
-    )
+    try:
+        result = function(
+            message,
+            api_key=effective_key,
+            sender=effective_sender,
+            reply_to=effective_reply,
+        )
+    except Exception as exc:
+        # The external outcome may be ambiguous; record the failure class and
+        # do not retry automatically. Owner reconciliation is required.
+        mark_failed(
+            conn, outreach_id, provider=resolved_provider,
+            reason="provider_exception:" + type(exc).__name__,
+        )
+        return DeliveryResult(
+            outreach_id, False, False,
+            "provider_exception:" + type(exc).__name__,
+            provider=resolved_provider,
+        )
 
     if result.success:
         state_updated = mark_sent(

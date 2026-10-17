@@ -326,6 +326,9 @@
 
             <form method="POST">
                 <input type="hidden" name="consultation_csrf_token" value="{{ consultation_csrf_token }}">
+                {% if data.get('handoff_prefill') %}
+                <input type="hidden" name="handoff_token" value="{{ data.get('handoff_prefill', {}).get('token', '') }}">
+                {% endif %}
 
                 <input
                     type="hidden"
@@ -341,6 +344,7 @@
                     <input
                         type="text"
                         name="business_name"
+                        value="{{ data.get('handoff_prefill', {}).get('business_name', '') }}"
                         required
                     >
                 </div>
@@ -352,6 +356,7 @@
                     <input
                         type="email"
                         name="contact_email"
+                        value="{{ data.get('handoff_prefill', {}).get('email', '') }}"
                         required
                         autocomplete="email"
                         placeholder="you@yourbusiness.com"
@@ -385,6 +390,7 @@
                     <input
                         type="url"
                         name="website"
+                        value="{{ data.get('handoff_prefill', {}).get('website', '') }}"
                         placeholder="https://example.com"
                     >
                 </div>

@@ -8,6 +8,7 @@ from typing import Any
 from app.models import LeadState
 from app.pipeline import TERMINAL_STATES, transition
 from app.replies import BudgetSignal, ReplyIntent, classify_reply, extract_budget_signal
+from app.followup_scheduler import cancel_follow_ups
 
 
 def _key(lead_id: int, from_email: str, subject: str, body: str) -> str:
@@ -49,6 +50,10 @@ def process_reply(
     if cursor.rowcount == 0:
         conn.commit()
         return {"accepted": True, "duplicate": True, "intent": intent.value, "reason": "reply_already_recorded"}
+
+    # Any human reply ends the no-response reminder sequence, even when
+    # intent is unclear. Unsubscribes also enter the central suppression list.
+    cancel_follow_ups(conn, lead_id, reason="prospect_replied", commit=False)
 
     if intent == ReplyIntent.UNSUBSCRIBE:
         conn.execute(
