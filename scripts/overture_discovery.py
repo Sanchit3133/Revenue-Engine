@@ -174,7 +174,7 @@ def normalize_feature(feature: dict) -> dict | None:
     # First version handles these documented permissive source licenses only.
     # Foursquare-derived records are excluded until its NOTICE/Apache license
     # bundle is carried through the release/distribution process.
-    accepted_licenses = {"cdla-permissive-2.0", "apache-2.0", "cc0-1.0"}
+    accepted_licenses = {"cdla-permissive-2.0", "cc0-1.0"}
     normalized_licenses = {license_name.casefold() for _, license_name in source_licenses}
     normalized_sources = {src.casefold() for src, _ in source_licenses}
     if "foursquare" in normalized_sources:
