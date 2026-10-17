@@ -1,0 +1,84 @@
+name: Revenue Engine persist approved website leads
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type PERSIST_MAX_5_LEADS to approve saving qualified lead records only
+        required: true
+        type: string
+      website_urls:
+        description: Same up to five official HTTPS website URLs reviewed in preview, comma-separated
+        required: true
+        type: string
+      country:
+        description: Configured target country
+        required: true
+        default: India
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-engine-website-seed-worker
+  cancel-in-progress: false
+
+jobs:
+  persist-website-leads:
+    if: github.repository == 'Sanchit3133/Revenue-Engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Require explicit persistence confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          if [ "$CONFIRMATION" != "PERSIST_MAX_5_LEADS" ]; then
+            echo "::error::Confirmation did not match. No lead records were changed."
+            exit 1
+          fi
+
+      - name: Require restricted worker database secret
+        env:
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_WORKER_DATABASE_URL }}
+        run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing REVENUE_ENGINE_WORKER_DATABASE_URL. Create a restricted production DB role and add its connection string as this secret before running persistence."
+            exit 1
+          fi
+          echo "Worker database secret is present; its value is not shown."
+
+      - name: Check out PostgreSQL-capable worker code
+        uses: actions/checkout@v4
+        with:
+          ref: deployment/replit-full-engine-20261015
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install worker dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements.txt
+
+      - name: Compile Python files
+        run: python -m compileall -q app scripts tests
+
+      - name: Test seed parsing and contact-extraction safeguards
+        run: python -m unittest tests.test_github_website_seed_worker -v
+
+      - name: Persist only qualified website leads
+        env:
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_WORKER_DATABASE_URL }}
+          DATABASE_BACKEND: postgresql
+          ENVIRONMENT: production
+          WEBSITE_URLS: ${{ inputs.website_urls }}
+          COUNTRY: ${{ inputs.country }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          python -m scripts.github_website_seed_worker \
+            --websites "$WEBSITE_URLS" \
+            --country "$COUNTRY" \
+            --persist \
+            --confirmation "$CONFIRMATION"
