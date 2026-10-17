@@ -6,6 +6,7 @@ stay on the same host, and keep run output to aggregate counts.
 """
 from __future__ import annotations
 
+import ipaddress
 import random
 import time
 from urllib.parse import urljoin, urlparse
@@ -218,9 +219,27 @@ def normalize_feature(feature: dict) -> dict | None:
 def _official_https_site(url: str) -> str:
     site = normalize_website(url)
     parsed = urlparse(site)
-    if parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username or parsed.password:
+    host = (parsed.hostname or "").rstrip(".").lower()
+    if (
+        parsed.scheme.lower() != "https"
+        or not host
+        or parsed.username
+        or parsed.password
+        or parsed.port not in (None, 443)
+    ):
         return ""
-    return site.rstrip("/")
+    if host == "localhost" or host.endswith((".localhost", ".local", ".internal", ".test", ".invalid")):
+        return ""
+    # Public directory data should never cause HTTP requests to literal IP
+    # addresses (especially private/loopback/link-local services).
+    try:
+        ipaddress.ip_address(host)
+    except ValueError:
+        pass
+    else:
+        return ""
+    # Crawl the host root, not an arbitrary path from the directory record.
+    return f"https://{parsed.netloc}".rstrip("/")
 
 
 def _same_host(base: str, candidate: str) -> bool:
