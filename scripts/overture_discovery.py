@@ -161,13 +161,14 @@ def normalize_feature(feature: dict) -> dict | None:
         return None
     for source in raw_sources:
         if not isinstance(source, dict):
-            continue
+            return None
         src = str(source.get("dataset") or source.get("provider") or "").strip()
         license_name = str(source.get("license") or "").strip()
-        if src and src not in source_names:
+        if not src or not license_name:
+            return None
+        if src not in source_names:
             source_names.append(src)
-        if src and license_name:
-            source_licenses.append((src, license_name))
+        source_licenses.append((src, license_name))
     if not source_licenses:
         return None
     # First version handles these documented permissive source licenses only.
@@ -353,6 +354,7 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
             f"first_sale_priority={priority}",
             f"priority_score={priority_score}",
             f"discovery_source=Overture Maps Places; segment={segment}",
+            f"discovery_city={city.name}; city_source=GeoNames cities15000; city_license=CC BY 4.0",
             f"overture_source_records={','.join(place['source_names']) or 'unspecified'}",
             "overture_source_licenses=" + ",".join(sorted({license_name for _, license_name in place["source_licenses"]})),
             f"data_attribution={OVERTURE_ATTRIBUTION}",
