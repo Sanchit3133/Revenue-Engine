@@ -699,7 +699,7 @@ def mark_sent(
         "SELECT * FROM outreach WHERE id = ?",
         (outreach_id,),
     ).fetchone()
-    if row is None or row["status"] != PREPARED_STATUS:
+    if row is None or row["status"] not in (PREPARED_STATUS, "SENDING"):
         return False
 
     sent_at = datetime.now(timezone.utc).isoformat()
@@ -760,7 +760,7 @@ def mark_failed(
         "SELECT * FROM outreach WHERE id = ?",
         (outreach_id,),
     ).fetchone()
-    if row is None or row["status"] not in (PREPARED_STATUS, SENT_STATUS):
+    if row is None or row["status"] not in (PREPARED_STATUS, "SENDING", SENT_STATUS):
         return False
 
     conn.execute(
