@@ -35,7 +35,7 @@ The migration adds the persistent reminder queue, expiring consultation tokens, 
 
 ## 3. Create the restricted automation database role
 
-Create a non-owner PostgreSQL login named revenue_engine_automation (or another name consistently substituted below) in the same Production database. Use a strong generated password. This role must not own the schema and must not have delete, DDL, payment, client-request or generated-file privileges.
+Create a non-owner PostgreSQL login named revenue_engine_automation (or another name consistently substituted below) in the same Production database. Use a strong generated password. This role must not own the schema and must not have delete, DDL, payment, client-request or generated-file privileges. It may insert aggregate-only module run status for the owner dashboard, but must not read the existing module-run logs.
 
 Run these grants in Production as the database owner:
 
@@ -52,6 +52,7 @@ GRANT INSERT ON TABLE public.state_events TO revenue_engine_automation;
 GRANT INSERT ON TABLE public.outreach_events TO revenue_engine_automation;
 GRANT SELECT, INSERT, UPDATE ON TABLE public.follow_up_schedule TO revenue_engine_automation;
 GRANT INSERT ON TABLE public.consultation_handoff_tokens TO revenue_engine_automation;
+GRANT INSERT ON TABLE public.module_runs TO revenue_engine_automation;
 
 DO $$
 DECLARE
@@ -60,7 +61,7 @@ DECLARE
 BEGIN
     FOREACH table_name IN ARRAY ARRAY[
         'leads', 'outreach', 'state_events', 'outreach_events',
-        'follow_up_schedule', 'consultation_handoff_tokens'
+        'follow_up_schedule', 'consultation_handoff_tokens', 'module_runs'
     ] LOOP
         sequence_name := pg_get_serial_sequence('public.' || table_name, 'id');
         IF sequence_name IS NOT NULL THEN
