@@ -43,6 +43,18 @@ class TestWebsiteSeedWorkerParsing(unittest.TestCase):
         """
         self.assertEqual(extract_business_name(html), "North Star Coaching")
 
+    def test_title_skips_home_prefix_and_keeps_business_name(self):
+        self.assertEqual(
+            extract_business_name("<html><title>Home - North Star Coaching</title></html>"),
+            "North Star Coaching",
+        )
+
+    def test_title_skips_contact_prefix_and_keeps_business_name(self):
+        self.assertEqual(
+            extract_business_name("<html><title>Contact Us | North Star Coaching</title></html>"),
+            "North Star Coaching",
+        )
+
     def test_extracts_public_mailto_email(self):
         html = """
         <html><body><a href="mailto:admissions@northstarcoaching.in">Admissions</a></body></html>
