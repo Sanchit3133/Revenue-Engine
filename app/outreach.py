@@ -10,6 +10,7 @@ from typing import Any
 from app.lead_engine import is_valid_public_email, normalize_email
 from app.models import LeadState
 from app.pipeline import transition
+from app.followup_scheduler import schedule_next_follow_up
 
 
 MAX_OUTREACH_ATTEMPTS = 3  # first contact + 2 follow-ups
@@ -726,6 +727,16 @@ def mark_sent(
         provider=provider,
         reason="accepted",
         details={"provider_message_id": message_id},
+    )
+    # Schedule reminders from the same transaction as the provider-accepted state.
+    # Attempts 1 and 2 schedule follow-ups; attempt 3 schedules nothing further.
+    schedule_next_follow_up(
+        conn,
+        lead_id=int(row["lead_id"]),
+        source_outreach_id=int(row["id"]),
+        accepted_attempt_number=int(row["attempt_number"]),
+        sent_at=datetime.fromisoformat(sent_at),
+        commit=False,
     )
     conn.commit()
     return True
