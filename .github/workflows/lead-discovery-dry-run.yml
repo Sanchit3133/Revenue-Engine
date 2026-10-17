@@ -56,8 +56,10 @@ jobs:
           fi
           echo "Required secrets are present; values are not printed."
 
-      - name: Check out default-branch code
+      - name: Check out PostgreSQL-hardened worker code
         uses: actions/checkout@v4
+        with:
+          ref: deployment/replit-full-engine-20261015
 
       - name: Set up Python
         uses: actions/setup-python@v5
