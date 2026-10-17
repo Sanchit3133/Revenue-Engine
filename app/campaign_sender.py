@@ -129,9 +129,13 @@ def send_prepared(
             provider=selected_provider,
         )
 
+    try:
+        resolved_provider, resolved_sender_function, default_key, default_sender, default_reply = _provider_details(selected_provider)
+    except ValueError as exc:
+        return DeliveryResult(outreach_id, False, False, str(exc), provider=selected_provider)
+
     # Atomic claim prevents two overlapping workers from submitting the same
-    # prepared message. If the worker crashes during provider I/O, the SENDING
-    # record is deliberately not auto-retried because acceptance may be unknown.
+    # prepared message. A crash during provider I/O is deliberately not auto-retried.
     claim = conn.execute(
         "UPDATE outreach SET status = 'SENDING' WHERE id = ? AND status = ?",
         (outreach_id, PREPARED_STATUS),
@@ -139,11 +143,6 @@ def send_prepared(
     conn.commit()
     if claim.rowcount != 1:
         return DeliveryResult(outreach_id, False, False, "outreach_claim_lost", provider=selected_provider)
-
-    try:
-        resolved_provider, resolved_sender_function, default_key, default_sender, default_reply = _provider_details(selected_provider)
-    except ValueError as exc:
-        return DeliveryResult(outreach_id, False, False, str(exc), provider=selected_provider)
 
     function = sender_function or resolved_sender_function
     # Explicit parameters are convenient for tests and one-off controlled calls.
