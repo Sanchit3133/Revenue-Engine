@@ -49,6 +49,7 @@ class TestOvertureSource(unittest.TestCase):
             "websites": ["https://example.in/"],
             "confidence": 0.9,
             "taxonomy": {"primary": "education"},
+            "sources": [{"dataset": "meta", "license": "CDLA-Permissive-2.0"}],
         }
         self.assertIsNotNone(normalize_feature({"properties": base}))
         self.assertIsNone(normalize_feature({"properties": {**base, "websites": ["http://example.in/"]}}))
