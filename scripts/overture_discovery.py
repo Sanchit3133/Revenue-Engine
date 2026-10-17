@@ -154,11 +154,32 @@ def normalize_feature(feature: dict) -> dict | None:
         address = ", ".join(parts)[:500]
     phones = _text_list(props.get("phones"))
     source_names = []
-    for source in props.get("sources", []) if isinstance(props.get("sources"), list) else []:
-        if isinstance(source, dict):
-            src = str(source.get("dataset") or source.get("provider") or "").strip()
-            if src and src not in source_names:
-                source_names.append(src)
+    source_licenses = []
+    raw_sources = props.get("sources")
+    if not isinstance(raw_sources, list) or not raw_sources:
+        # Fail closed when source provenance cannot be checked.
+        return None
+    for source in raw_sources:
+        if not isinstance(source, dict):
+            continue
+        src = str(source.get("dataset") or source.get("provider") or "").strip()
+        license_name = str(source.get("license") or "").strip()
+        if src and src not in source_names:
+            source_names.append(src)
+        if src and license_name:
+            source_licenses.append((src, license_name))
+    if not source_licenses:
+        return None
+    # First version handles these documented permissive source licenses only.
+    # Foursquare-derived records are excluded until its NOTICE/Apache license
+    # bundle is carried through the release/distribution process.
+    accepted_licenses = {"cdla-permissive-2.0", "apache-2.0", "cc0-1.0"}
+    normalized_licenses = {license_name.casefold() for _, license_name in source_licenses}
+    normalized_sources = {src.casefold() for src, _ in source_licenses}
+    if "foursquare" in normalized_sources:
+        return None
+    if not normalized_licenses.issubset(accepted_licenses):
+        return None
     return {
         "place_id": "overture:" + place_id,
         "business_name": name,
@@ -167,6 +188,7 @@ def normalize_feature(feature: dict) -> dict | None:
         "phone": phones[0][:80] if phones else "",
         "category_text": category_text[:1000],
         "source_names": source_names,
+        "source_licenses": source_licenses,
         "confidence": confidence,
     }
 
@@ -332,6 +354,7 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
             f"priority_score={priority_score}",
             f"discovery_source=Overture Maps Places; segment={segment}",
             f"overture_source_records={','.join(place['source_names']) or 'unspecified'}",
+            "overture_source_licenses=" + ",".join(sorted({license_name for _, license_name in place["source_licenses"]})),
             f"data_attribution={OVERTURE_ATTRIBUTION}",
             "email_evidence=publicly displayed on the business's official HTTPS website",
         ]
