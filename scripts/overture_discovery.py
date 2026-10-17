@@ -159,27 +159,46 @@ def normalize_feature(feature: dict) -> dict | None:
     if not isinstance(raw_sources, list) or not raw_sources:
         # Fail closed when source provenance cannot be checked.
         return None
+
+    # Resolve missing record-level license fields against Overture's official
+    # Places source-attribution table. Unknown source labels stay blocked.
+    source_license_map = {
+        "alltheplaces": "CC0-1.0",
+        "brightquery": "CDLA-Permissive-2.0",
+        "dac": "CDLA-Permissive-2.0",
+        "krick": "CDLA-Permissive-2.0",
+        "microsoft": "CDLA-Permissive-2.0",
+        "pinmeto": "CDLA-Permissive-2.0",
+        "renderseo": "CDLA-Permissive-2.0",
+        "meta": "CDLA-Permissive-2.0",
+    }
+    accepted_licenses = {"cdla-permissive-2.0", "cc0-1.0"}
+
     for source in raw_sources:
         if not isinstance(source, dict):
             return None
         src = str(source.get("dataset") or source.get("provider") or "").strip()
-        license_name = str(source.get("license") or "").strip()
-        if not src or not license_name:
+        if not src:
+            return None
+        normalized_source = src.casefold()
+        if "foursquare" in normalized_source:
+            # Deliberately exclude until Apache NOTICE inclusion is supported.
+            return None
+        mapped_license = source_license_map.get(normalized_source)
+        supplied_license = str(source.get("license") or "").strip()
+        license_name = supplied_license or mapped_license or ""
+        if not license_name:
+            return None
+        if mapped_license and license_name.casefold() != mapped_license.casefold():
+            # Do not silently override a contradictory license marker.
+            return None
+        if license_name.casefold() not in accepted_licenses:
             return None
         if src not in source_names:
             source_names.append(src)
         source_licenses.append((src, license_name))
+
     if not source_licenses:
-        return None
-    # First version handles these documented permissive source licenses only.
-    # Foursquare-derived records are excluded until its NOTICE/Apache license
-    # bundle is carried through the release/distribution process.
-    accepted_licenses = {"cdla-permissive-2.0", "cc0-1.0"}
-    normalized_licenses = {license_name.casefold() for _, license_name in source_licenses}
-    normalized_sources = {src.casefold() for src, _ in source_licenses}
-    if "foursquare" in normalized_sources:
-        return None
-    if not normalized_licenses.issubset(accepted_licenses):
         return None
     return {
         "place_id": "overture:" + place_id,
