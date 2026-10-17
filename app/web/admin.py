@@ -494,43 +494,12 @@ def save_market_validation():
 def run_lead_discovery():
     if not _csrf_valid(request.form.get("csrf_token", "")):
         abort(400, description="Invalid CSRF token")
-    if not getattr(settings, "google_api_key", None):
-        flash("Lead discovery is disabled: GOOGLE_API_KEY is not configured in the deployment secrets.", "error")
-        return redirect(url_for("admin.owner_dashboard") + "#lead-discovery")
-    city = (request.form.get("city") or "").strip()[:80]
-    country_input = (request.form.get("country") or getattr(settings, "target_market_country", "India")).strip()[:120]
-    try:
-        country = get_market(country_input).country
-    except ValueError:
-        flash("Choose a country from the configured market list.", "error")
-        return redirect(url_for("admin.owner_dashboard") + "#lead-discovery")
-    query = (request.form.get("query") or "coaching institute").strip()[:100]
-    try:
-        pages = int(request.form.get("pages", "1"))
-        max_new = int(request.form.get("max_new", "5"))
-    except ValueError:
-        flash("Pages and lead limit must be whole numbers.", "error")
-        return redirect(url_for("admin.owner_dashboard") + "#lead-discovery")
-    if not city or not query or not 1 <= pages <= 2 or not 1 <= max_new <= 10:
-        flash("Enter a city/query; limits are 1–2 pages and at most 10 new leads per run.", "error")
-        return redirect(url_for("admin.owner_dashboard") + "#lead-discovery")
-    project_root = Path(__file__).resolve().parents[2]
-    command = [sys.executable, "-m", "scripts.discover_leads", "--city", city, "--country", country,
-               "--query", query, "--pages", str(pages), "--max-new", str(max_new)]
-    try:
-        completed = subprocess.run(command, cwd=project_root, capture_output=True, text=True,
-                                   timeout=120, check=False)
-        output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
-        ok = completed.returncode == 0
-        status = "success" if ok else "failed"
-        summary = f"Country={country}; City={city}; query={query}; return_code={completed.returncode}"
-        _record_module_run("lead_discovery", status, summary, output)
-        flash("Lead discovery finished. No emails were sent; inspect the operation log below." if ok else
-              "Lead discovery failed. Inspect the operation log below.", "success" if ok else "error")
-    except subprocess.TimeoutExpired as exc:
-        output = ((exc.stdout or "") + "\n" + (exc.stderr or "")) if isinstance(exc.stdout, str) else "Lead discovery exceeded 120 seconds."
-        _record_module_run("lead_discovery", "timeout", f"Country={country}; City={city}; query={query}", output)
-        flash("Lead discovery timed out. Check operation log and provider/API quotas.", "error")
+    flash(
+        "Manual Google Places discovery has been retired. "
+        "The replacement Overture Maps acquisition worker is being validated "
+        "before scheduled production automation is enabled.",
+        "warning",
+    )
     return redirect(url_for("admin.owner_dashboard") + "#lead-discovery")
 
 
