@@ -238,9 +238,27 @@ class TestCampaignSender(unittest.TestCase):
         sender.assert_not_called()
 
     def test_batch_is_capped_by_explicit_limit(self):
+        # Each prepared first-contact row represents a different recipient.
         first = self.add_outreach()
-        second = self.add_outreach()
-        third = self.add_outreach()
+        second_lead = self.conn.execute(
+            "INSERT INTO leads(place_id,business_name,email,state) VALUES(?,?,?,?)",
+            ("place-2", "Second Coaching", "second@example.test", LeadState.QUALIFIED.value),
+        ).lastrowid
+        second = self.conn.execute(
+            """INSERT INTO outreach(lead_id,email,subject,body,attempt_number,status)
+               VALUES(?,?,?,?,1,?)""",
+            (second_lead, "second@example.test", "Quick question", "How do you handle enquiries?", PREPARED_STATUS),
+        ).lastrowid
+        third_lead = self.conn.execute(
+            "INSERT INTO leads(place_id,business_name,email,state) VALUES(?,?,?,?)",
+            ("place-3", "Third Coaching", "third@example.test", LeadState.QUALIFIED.value),
+        ).lastrowid
+        third = self.conn.execute(
+            """INSERT INTO outreach(lead_id,email,subject,body,attempt_number,status)
+               VALUES(?,?,?,?,1,?)""",
+            (third_lead, "third@example.test", "Quick question", "How do you handle enquiries?", PREPARED_STATUS),
+        ).lastrowid
+        self.conn.commit()
 
         sender = Mock(
             side_effect=self.accepted_sender

@@ -8,8 +8,11 @@ from email.utils import parseaddr
 from typing import Any
 
 from app.lead_engine import is_valid_public_email, normalize_email
+from app.config import settings
+from app.consultation_handoff import new_handoff_material
 from app.models import LeadState
 from app.pipeline import transition
+from app.followup_scheduler import schedule_next_follow_up
 
 
 MAX_OUTREACH_ATTEMPTS = 3  # first contact + 2 follow-ups
@@ -237,7 +240,7 @@ def _lead_row(conn: Any, lead_id: int) -> Any | None:
     ).fetchone()
 
 
-def _build_first_contact_message(lead: Any) -> Message:
+def _build_first_contact_message(lead: Any, consultation_url: str | None = None) -> Message:
     email = normalize_email(lead["email"])
     business_name = (lead["business_name"] or "your institute").strip()
 
@@ -252,7 +255,8 @@ def _build_first_contact_message(lead: Any) -> Message:
             f"the first conversation, how do you currently track and "
             f"follow up with them?\n\n"
             f"If you already have it handled, no problem.\n\n"
-            f"Best,\n"
+            + (f"If it is easier, you can also share your current process here:\n{consultation_url}\n\n" if consultation_url else "")
+            + f"Best,\n"
             f"Sanchit\n\n"
             f"If you would rather not receive messages from me, just "
             f"reply STOP."
@@ -315,7 +319,9 @@ def _eligibility(
     allowed_states = {LeadState.QUALIFIED.value}
 
     if allow_contacted:
-        allowed_states.add(LeadState.CONTACTED.value)
+        # A provider delivery webhook may advance CONTACTED to DELIVERED;
+        # that does not make a no-response reminder ineligible.
+        allowed_states.update({LeadState.CONTACTED.value, LeadState.DELIVERED.value})
 
     if lead["state"] not in allowed_states:
         return False, "lead_not_qualified"
@@ -377,7 +383,11 @@ def prepare_first_contact(
             reason=reason,
         )
 
-    message = _build_first_contact_message(lead)
+    handoff = new_handoff_material(getattr(settings, "public_app_url", None))
+    message = _build_first_contact_message(
+        lead,
+        consultation_url=handoff["url"] if handoff else None,
+    )
 
     valid, validation_reason = validate_message(message)
 
@@ -386,6 +396,15 @@ def prepare_first_contact(
             allowed=False,
             reason=validation_reason,
             message=message,
+        )
+
+    if handoff is not None:
+        # Only a one-way hash is stored. The raw token exists only in the
+        # prepared message and expires automatically.
+        conn.execute(
+            """INSERT INTO consultation_handoff_tokens(token_hash, lead_id, expires_at)
+               VALUES (?, ?, ?)""",
+            (handoff["token_hash"], int(lead_id), handoff["expires_at"]),
         )
 
     cursor = conn.execute(
@@ -456,7 +475,7 @@ def prepare_follow_up(
             allowed=False,
             reason="first_contact_not_sent",
         )
-    if lead["state"] != LeadState.CONTACTED.value:
+    if lead["state"] not in {LeadState.CONTACTED.value, LeadState.DELIVERED.value}:
         return OutreachResult(
             allowed=False,
             reason="lead_not_contacted",
@@ -696,7 +715,7 @@ def mark_sent(
         "SELECT * FROM outreach WHERE id = ?",
         (outreach_id,),
     ).fetchone()
-    if row is None or row["status"] != PREPARED_STATUS:
+    if row is None or row["status"] not in (PREPARED_STATUS, "SENDING"):
         return False
 
     sent_at = datetime.now(timezone.utc).isoformat()
@@ -711,13 +730,24 @@ def mark_sent(
     )
 
     lead = _lead_row(conn, int(row["lead_id"]))
-    if lead is not None and lead["state"] == LeadState.QUALIFIED.value:
-        transition(
-            conn,
-            int(row["lead_id"]),
-            LeadState.CONTACTED,
-            reason="outreach_sent",
-        )
+    can_schedule_no_response_reminder = False
+    if lead is not None:
+        current_state = str(lead["state"])
+        if current_state == LeadState.QUALIFIED.value:
+            # Participate in this transaction so the state, SENT row, event
+            # and reminder schedule either commit together or roll back.
+            transition(
+                conn,
+                int(row["lead_id"]),
+                LeadState.CONTACTED,
+                reason="outreach_sent",
+                commit=False,
+            )
+            can_schedule_no_response_reminder = True
+        elif current_state in {LeadState.CONTACTED.value, LeadState.DELIVERED.value}:
+            can_schedule_no_response_reminder = True
+        # Never regress REPLIED/INTERESTED/BUDGET_DISCLOSED/terminal states
+        # if a webhook/reply was processed while the provider request ran.
 
     _record_outreach_event(
         conn,
@@ -727,6 +757,17 @@ def mark_sent(
         reason="accepted",
         details={"provider_message_id": message_id},
     )
+    # Only schedule no-response follow-ups if the lead still has a no-response
+    # state. Attempts 1 and 2 schedule one follow-up; attempt 3 schedules none.
+    if can_schedule_no_response_reminder:
+        schedule_next_follow_up(
+            conn,
+            lead_id=int(row["lead_id"]),
+            source_outreach_id=int(row["id"]),
+            accepted_attempt_number=int(row["attempt_number"]),
+            sent_at=datetime.fromisoformat(sent_at),
+            commit=False,
+        )
     conn.commit()
     return True
 
@@ -747,7 +788,7 @@ def mark_failed(
         "SELECT * FROM outreach WHERE id = ?",
         (outreach_id,),
     ).fetchone()
-    if row is None or row["status"] not in (PREPARED_STATUS, SENT_STATUS):
+    if row is None or row["status"] not in (PREPARED_STATUS, "SENDING", SENT_STATUS):
         return False
 
     conn.execute(

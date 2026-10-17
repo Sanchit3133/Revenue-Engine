@@ -214,9 +214,9 @@ def extract_business_name(html: str) -> str:
             raw_value = (node.get("content") or "").strip()
         else:
             raw_value = node.get_text(" ", strip=True)
-        raw_value = re.sub(r"\\s+", " ", raw_value).strip(" -|—–:")
+        raw_value = re.sub(r"\s+", " ", raw_value).strip(" -|—–:")
         values = (
-            re.split(r"\\s+[|—–]\\s+|\\s+-\\s+", raw_value)
+            re.split(r"\s+[|—–]\s+|\s+-\s+", raw_value)
             if selector == "title"
             else [raw_value]
         )

@@ -133,6 +133,11 @@ def classify_reply(
     # The outbound message explicitly asks recipients to reply STOP. Treat a
     # bare STOP (including quoted/replied punctuation) as an opt-out, without
     # treating unrelated sentences that merely contain the word "stop" as one.
+    bare_body = (body or "").strip()
+    # Check the body separately; including the subject in the regex made a
+    # genuine "STOP" reply fail whenever the subject started with "Re:".
+    if re.fullmatch(r"[\s>*'\"]*stop[\s.!?]*", bare_body, flags=re.IGNORECASE):
+        return ReplyIntent.UNSUBSCRIBE
     if re.fullmatch(r"[\s>*'\"]*stop[\s.!?]*", text, flags=re.IGNORECASE):
         return ReplyIntent.UNSUBSCRIBE
 

@@ -1,0 +1,96 @@
+name: Revenue Engine automated acquisition and follow-up
+
+on:
+  schedule:
+    - cron: "30 3 * * *"
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type RUN_AUTOMATED_CYCLE to permit a live acquisition cycle
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-engine-automated-cycle
+  cancel-in-progress: false
+
+jobs:
+  acquisition-cycle:
+    if: github.repository == 'Sanchit3133/Revenue-Engine' && (github.event_name != 'schedule' || vars.REVENUE_ENGINE_AUTOMATION_ENABLED == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Require explicit live-run confirmation and activation switch
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          AUTOMATION_ENABLED: ${{ vars.REVENUE_ENGINE_AUTOMATION_ENABLED }}
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_AUTOMATION_DATABASE_URL }}
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER: ${{ secrets.BREVO_SENDER }}
+          PUBLIC_APP_URL: ${{ secrets.PUBLIC_APP_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$CONFIRMATION" != "RUN_AUTOMATED_CYCLE" ]; then
+            echo "::error::Confirmation did not match. Nothing was discovered or sent."
+            exit 1
+          fi
+          if [ "$AUTOMATION_ENABLED" != "true" ]; then
+            echo "::error::Automation remains disabled. Complete acceptance checks, then set the REVENUE_ENGINE_AUTOMATION_ENABLED Actions variable to true."
+            exit 1
+          fi
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing restricted REVENUE_ENGINE_AUTOMATION_DATABASE_URL Actions secret."
+            exit 1
+          fi
+          if [ -z "$BREVO_API_KEY" ] || [ -z "$BREVO_SENDER" ]; then
+            echo "::error::Missing BREVO_API_KEY or BREVO_SENDER Actions secret. No live send is allowed."
+            exit 1
+          fi
+          case "$PUBLIC_APP_URL" in
+            https://*) ;;
+            *) echo "::error::PUBLIC_APP_URL must be a verified HTTPS Replit app URL."; exit 1 ;;
+          esac
+          echo "Preflight passed. Secret values are not displayed."
+
+      - name: Check out the selected workflow branch
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install worker dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-worker.txt
+
+      - name: Compile all Python modules
+        run: python -m compileall -q app scripts tests
+
+      - name: Test campaign, suppression, scheduling and source safeguards
+        run: python -m unittest tests.test_followup_scheduler tests.test_overture_discovery tests.test_recipient_uniqueness tests.test_consultation_handoff tests.test_brevo_inbound tests.test_outreach tests.test_campaign_sender tests.test_reply_processor tests.test_webhook_processing -v
+
+      - name: Run the bounded live cycle
+        env:
+          ENVIRONMENT: development
+          DATABASE_BACKEND: postgresql
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_AUTOMATION_DATABASE_URL }}
+          REVENUE_ENGINE_AUTOMATION_ENABLED: ${{ vars.REVENUE_ENGINE_AUTOMATION_ENABLED }}
+          EMAIL_PROVIDER: brevo
+          BREVO_API_KEY: ${{ secrets.BREVO_API_KEY }}
+          BREVO_SENDER: ${{ secrets.BREVO_SENDER }}
+          BREVO_REPLY_TO: ${{ secrets.BREVO_REPLY_TO }}
+          BREVO_WEBHOOK_TOKEN: ${{ secrets.BREVO_WEBHOOK_TOKEN }}
+          PUBLIC_APP_URL: ${{ secrets.PUBLIC_APP_URL }}
+          MARKET_VALIDATION_REQUIRED: "true"
+          TARGET_MARKET_COUNTRY: India
+          CAMPAIGN_LIMIT: "5"
+          DAILY_LIMIT: "10"
+          MIN_SEND_DELAY: "8"
+          MAX_SEND_DELAY: "20"
+          DOMAIN_COOLDOWN: "3600"
+          MAX_CONSECUTIVE_FAILURES: "3"
+        run: python -m scripts.run_automated_cycle --send --country India --max-new 5

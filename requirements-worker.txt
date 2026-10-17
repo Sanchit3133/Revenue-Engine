@@ -1,0 +1,3 @@
+-r requirements.txt
+# Official Overture Maps Places downloader used only by the background worker.
+overturemaps>=0.17,<1

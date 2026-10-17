@@ -34,7 +34,7 @@ This repository is a conservative workflow for turning publicly sourced business
 - Separate preparation and delivery stages (`scripts/prepare_campaign.py`, `scripts/run_campaign.py`).
 - Provider selection via `EMAIL_PROVIDER=brevo|sendgrid`.
 - Brevo transactional-email client (`app/brevo_client.py`) and retained SendGrid client (`app/sendgrid_client.py`).
-- Rate delay and consecutive-failure stop guard for live batches.
+- Persistent reminders (four days after first contact, then five days after follow-up 1), hard cap of two follow-ups, rate delay, daily/run caps, atomic message claims, and a consecutive-failure stop guard.
 - Append-only outreach event records and a controlled transport-retry path preserving the failed source row.
 
 ### Delivery events and replies
@@ -44,6 +44,12 @@ This repository is a conservative workflow for turning publicly sourced business
 - Bare `STOP` is treated as an opt-out.
 
 **Webhook deployment note:** Brevo's different webhook products expose different authentication options. Configure a token/custom header if the selected webhook type supports it; otherwise use HTTPS and Brevo's recommended IP restrictions at a trusted reverse proxy. Do not expose an unauthenticated public webhook endpoint. The app route fails closed if `BREVO_WEBHOOK_TOKEN` is empty.
+
+### Automated acquisition lifecycle
+
+- GitHub Actions contains a read-only Overture preview and a daily acquisition workflow. The daily workflow is **gated off** until a restricted production database role, Brevo sender/reply receiver, production schema migration, market validation and end-to-end checks are complete.
+- Live automation uses the shared PostgreSQL database and never persists a runner-local SQLite database or pushes lead/contact history to Git.
+- See docs/phase-one-automation-setup.md for the exact production migration, limited-role grants, Brevo inbound setup and acceptance checklist. Live automation must remain disabled until that checklist is complete.
 
 ### Payment tracking
 
