@@ -255,8 +255,8 @@ def _build_first_contact_message(lead: Any, consultation_url: str | None = None)
             f"the first conversation, how do you currently track and "
             f"follow up with them?\n\n"
             f"If you already have it handled, no problem.\n\n"
-            + (f"If it is easier, you can also share your current process here:\\n{consultation_url}\\n\\n" if consultation_url else "")
-            + f"Best,\\n"
+            + (f"If it is easier, you can also share your current process here:\n{consultation_url}\n\n" if consultation_url else "")
+            + f"Best,\n"
             f"Sanchit\n\n"
             f"If you would rather not receive messages from me, just "
             f"reply STOP."
