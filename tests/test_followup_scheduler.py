@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 
 from app.database import SCHEMA
 from app.followup_scheduler import (
-    CANCELLED, CLAIMED, COMPLETED, SCHEDULED, cancel_follow_ups,
+    CANCELLED, CLAIMED, COMPLETED, FAILED, SCHEDULED, cancel_follow_ups,
     claim_due_follow_ups, finish_follow_up, mark_follow_up_prepared, release_stale_claims,
     schedule_next_follow_up,
 )
