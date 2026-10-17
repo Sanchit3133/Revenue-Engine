@@ -214,7 +214,7 @@ def _record_worker_run(conn, *, status: str, summary: dict) -> None:
     safe_summary = {
         key: value for key, value in summary.items()
         if key in {
-            "mode", "country", "city", "segment", "cities_attempted", "city_data_failures", "places_seen", "site_checks",
+            "mode", "country", "city", "segment", "cities_attempted", "city_data_failures", "places_seen", "normalized_places", "duplicate_places_skipped", "segment_matches", "site_checks",
             "published_emails_found", "qualified", "saved", "reminders_claimed",
             "prepared", "accepted_by_provider", "failed_or_blocked", "live_send_block",
         }
