@@ -84,6 +84,24 @@ CREATE TABLE IF NOT EXISTS outreach_events (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (outreach_id) REFERENCES outreach(id)
 );
+
+CREATE TABLE IF NOT EXISTS follow_up_schedule (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    lead_id INTEGER NOT NULL,
+    source_outreach_id INTEGER NOT NULL,
+    attempt_number INTEGER NOT NULL,
+    due_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'SCHEDULED',
+    prepared_outreach_id INTEGER,
+    cancellation_reason TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (lead_id, attempt_number),
+    FOREIGN KEY (lead_id) REFERENCES leads(id),
+    FOREIGN KEY (source_outreach_id) REFERENCES outreach(id),
+    FOREIGN KEY (prepared_outreach_id) REFERENCES outreach(id)
+);
+
 CREATE TABLE IF NOT EXISTS consultation_submissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE,
     business_name TEXT NOT NULL, email TEXT NOT NULL, website TEXT,
@@ -171,6 +189,9 @@ _MIGRATION_COLUMNS = {
 
 _MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_outreach_retry_source ON outreach(retry_of_outreach_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique_normalized ON leads(LOWER(TRIM(email))) WHERE email IS NOT NULL AND TRIM(email) <> ''",
+    "CREATE INDEX IF NOT EXISTS idx_follow_up_due ON follow_up_schedule(status, due_at)",
+    "CREATE INDEX IF NOT EXISTS idx_follow_up_lead ON follow_up_schedule(lead_id, attempt_number)",
     "CREATE INDEX IF NOT EXISTS idx_leads_country ON leads(country)",
     "CREATE INDEX IF NOT EXISTS idx_email_events_provider_msg ON email_events(provider, provider_message_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_events_idempotency ON email_events(idempotency_key) WHERE idempotency_key IS NOT NULL",
