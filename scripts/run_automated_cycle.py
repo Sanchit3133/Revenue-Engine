@@ -159,6 +159,9 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
             raise RuntimeError("The configured delivery provider credentials or sender are missing.")
         if settings.database_backend == "sqlite":
             raise RuntimeError("Live automation requires the shared PostgreSQL database.")
+        app_url = (getattr(settings, "public_app_url", None) or "").strip()
+        if not app_url.lower().startswith("https://"):
+            raise RuntimeError("PUBLIC_APP_URL must be a verified HTTPS app URL before live outreach so prospects can enter the consultation.")
     with connect() as conn:
         discovery = discover_and_persist(conn, country=country, max_new=max_new, persist=live)
         summary = {
