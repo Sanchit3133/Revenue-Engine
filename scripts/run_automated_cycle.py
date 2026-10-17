@@ -163,6 +163,12 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
         if not app_url.lower().startswith("https://"):
             raise RuntimeError("PUBLIC_APP_URL must be a verified HTTPS app URL before live outreach so prospects can enter the consultation.")
     with connect() as conn:
+        if not live:
+            # Preview runs must be read-only even if the supplied credentials can write.
+            if settings.database_backend == "postgresql":
+                conn.execute("SET TRANSACTION READ ONLY")
+            else:
+                conn.execute("PRAGMA query_only = ON")
         discovery = discover_and_persist(conn, country=country, max_new=max_new, persist=live)
         summary = {
             "mode": "LIVE" if live else "PREVIEW",
