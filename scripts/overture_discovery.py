@@ -135,9 +135,16 @@ def normalize_feature(feature: dict) -> dict | None:
     place_id = str(props.get("id") or "").strip()
     name = _first_text(props.get("names")) or str(props.get("name") or "").strip()
     website_values = _text_list(props.get("websites"))
-    website = normalize_website(website_values[0]) if website_values else ""
-    parsed = urlparse(website)
-    if not place_id or not name or parsed.scheme.lower() != "https" or not parsed.hostname:
+    # Some records list an unusable HTTP or malformed site before the real HTTPS site.
+    # Try each listed website but accept only a safe public HTTPS hostname.
+    website = ""
+    for candidate in website_values:
+        normalized = normalize_website(candidate)
+        safe_site = _official_https_site(normalized)
+        if safe_site:
+            website = safe_site
+            break
+    if not place_id or not name or not website:
         return None
     status = str(props.get("operating_status") or "").lower()
     if status in {"permanently_closed", "closed"}:
@@ -464,6 +471,9 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
     segments_used: list[str] = []
     stats = {
         "places_seen": 0,
+        "normalized_places": 0,
+        "duplicate_places_skipped": 0,
+        "segment_matches": 0,
         "site_checks": 0,
         "published_emails_found": 0,
         "qualified": 0,
@@ -497,9 +507,11 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
             place = normalize_feature(raw)
             if not place:
                 continue
+            stats["normalized_places"] += 1
 
             place_id = place["place_id"]
             if place_id in known_places or place_id in seen_ids:
+                stats["duplicate_places_skipped"] += 1
                 continue
             seen_ids.add(place_id)
 
@@ -513,6 +525,7 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
             )
             if matched_segment is None:
                 continue
+            stats["segment_matches"] += 1
 
             segment, _weight, query, _keywords = matched_segment
             if segment not in segments_used:

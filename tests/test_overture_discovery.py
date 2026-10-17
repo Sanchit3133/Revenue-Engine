@@ -55,6 +55,23 @@ class TestOvertureSource(unittest.TestCase):
         }
         self.assertIsNotNone(normalize_feature({"properties": base}))
         self.assertIsNone(normalize_feature({"properties": {**base, "websites": ["http://example.in/"]}}))
+        self.assertIsNotNone(
+            normalize_feature({
+                "properties": {
+                    **base,
+                    "websites": ["http://directory.example.in/", "https://academy.example.in/contact"],
+                }
+            })
+        )
+        self.assertEqual(
+            normalize_feature({
+                "properties": {
+                    **base,
+                    "websites": ["http://directory.example.in/", "https://academy.example.in/contact"],
+                }
+            })["website"],
+            "https://academy.example.in",
+        )
         self.assertIsNone(normalize_feature({"properties": {**base, "confidence": 0.2}}))
 
     def test_normalized_feature_does_not_use_upstream_email_fields(self):
@@ -241,6 +258,9 @@ class TestMultiCityDiscovery(unittest.TestCase):
         self.assertEqual(email_lookup.call_count, 1)
         self.assertEqual(result["cities_attempted"], 2)
         self.assertEqual(result["city"], "Khopoli, Nagpur")
+        self.assertEqual(result["normalized_places"], 1)
+        self.assertEqual(result["duplicate_places_skipped"], 0)
+        self.assertEqual(result["segment_matches"], 1)
         self.assertEqual(result["site_checks"], 1)
         self.assertEqual(result["published_emails_found"], 1)
         self.assertEqual(result["qualified"], 1)
