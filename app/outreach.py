@@ -316,7 +316,9 @@ def _eligibility(
     allowed_states = {LeadState.QUALIFIED.value}
 
     if allow_contacted:
-        allowed_states.add(LeadState.CONTACTED.value)
+        # A provider delivery webhook may advance CONTACTED to DELIVERED;
+        # that does not make a no-response reminder ineligible.
+        allowed_states.update({LeadState.CONTACTED.value, LeadState.DELIVERED.value})
 
     if lead["state"] not in allowed_states:
         return False, "lead_not_qualified"
@@ -457,7 +459,7 @@ def prepare_follow_up(
             allowed=False,
             reason="first_contact_not_sent",
         )
-    if lead["state"] != LeadState.CONTACTED.value:
+    if lead["state"] not in {LeadState.CONTACTED.value, LeadState.DELIVERED.value}:
         return OutreachResult(
             allowed=False,
             reason="lead_not_contacted",
