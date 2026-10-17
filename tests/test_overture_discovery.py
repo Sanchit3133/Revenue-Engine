@@ -2,10 +2,11 @@ import io
 import random
 import unittest
 import zipfile
+from unittest.mock import patch
 
 from scripts.overture_source import City, parse_cities_zip
 from scripts.overture_discovery import (
-    SEGMENTS, _emails_from_html, choose_random_segment,
+    SEGMENTS, _emails_from_html, _fetch_html, choose_random_segment,
     normalize_feature,
 )
 
@@ -94,6 +95,70 @@ class TestOvertureSource(unittest.TestCase):
         }
         self.assertIsNone(normalize_feature({"properties": {**base, "sources": [{"dataset": "unknown"}]}}))
         self.assertIsNone(normalize_feature({"properties": {**base, "sources": [{"dataset": "Foursquare", "license": "Apache-2.0"}]}}))
+
+    def test_known_overture_source_license_is_resolved_when_record_license_is_null(self):
+        feature = {
+            "properties": {
+                "id": "place-license-map",
+                "names": {"primary": "Test Academy"},
+                "websites": ["https://academy.example/"],
+                "confidence": 0.9,
+                "taxonomy": {"primary": "education"},
+                "sources": [{"dataset": "meta", "license": None}],
+            }
+        }
+        record = normalize_feature(feature)
+        self.assertIsNotNone(record)
+        self.assertEqual(record["source_licenses"], [("meta", "CDLA-Permissive-2.0")])
+
+    def test_external_redirect_is_blocked_before_second_request(self):
+        class Response:
+            def __init__(self, status, headers=None, body=b""):
+                self.status_code = status
+                self.headers = headers or {}
+                self.encoding = "utf-8"
+                self.body = body
+                self.closed = False
+            def iter_content(self, chunk_size):
+                yield self.body
+            def close(self):
+                self.closed = True
+
+        redirect = Response(302, {"Location": "https://external.example/contact"})
+        with patch("scripts.overture_discovery.requests.get", return_value=redirect) as mocked:
+            content = _fetch_html(
+                "https://official.example",
+                "https://official.example/contact",
+            )
+        self.assertEqual(content, "")
+        self.assertEqual(mocked.call_count, 1)
+        self.assertFalse(mocked.call_args.kwargs.get("allow_redirects", True))
+        self.assertTrue(redirect.closed)
+
+    def test_same_host_redirect_is_followed(self):
+        class Response:
+            def __init__(self, status, headers=None, body=b""):
+                self.status_code = status
+                self.headers = headers or {}
+                self.encoding = "utf-8"
+                self.body = body
+                self.closed = False
+            def iter_content(self, chunk_size):
+                yield self.body
+            def close(self):
+                self.closed = True
+
+        redirect = Response(301, {"Location": "/contact-us"})
+        final = Response(200, {"content-type": "text/html"}, b"<p>Hello</p>")
+        with patch("scripts.overture_discovery.requests.get", side_effect=[redirect, final]) as mocked:
+            content = _fetch_html(
+                "https://official.example",
+                "https://official.example/contact",
+            )
+        self.assertEqual(content, "<p>Hello</p>")
+        self.assertEqual(mocked.call_count, 2)
+        self.assertTrue(redirect.closed)
+        self.assertTrue(final.closed)
 
     def test_random_segment_comes_from_configured_market_profiles(self):
         segment, query, keywords = choose_random_segment(rng=random.Random(7))
