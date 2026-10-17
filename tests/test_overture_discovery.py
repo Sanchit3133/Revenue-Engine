@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from scripts.overture_source import City, parse_cities_zip
 from scripts.overture_discovery import (
-    SEGMENTS, _emails_from_html, _fetch_html, choose_random_segment,
+    SEGMENTS, _emails_from_html, _fetch_html, _official_https_site, choose_random_segment,
     normalize_feature,
 )
 
@@ -110,6 +110,15 @@ class TestOvertureSource(unittest.TestCase):
         record = normalize_feature(feature)
         self.assertIsNotNone(record)
         self.assertEqual(record["source_licenses"], [("meta", "CDLA-Permissive-2.0")])
+
+    def test_official_site_crawler_rejects_ip_literal_and_private_hosts(self):
+        self.assertEqual(_official_https_site("http://example.in"), "")
+        self.assertEqual(_official_https_site("https://127.0.0.1"), "")
+        self.assertEqual(_official_https_site("https://[::1]"), "")
+        self.assertEqual(_official_https_site("https://localhost"), "")
+        self.assertEqual(_official_https_site("https://service.local"), "")
+        self.assertEqual(_official_https_site("https://example.in:8443"), "")
+        self.assertEqual(_official_https_site("https://www.example.in/course"), "https://www.example.in")
 
     def test_external_redirect_is_blocked_before_second_request(self):
         class Response:
