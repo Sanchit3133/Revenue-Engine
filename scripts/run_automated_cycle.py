@@ -214,7 +214,7 @@ def _record_worker_run(conn, *, status: str, summary: dict) -> None:
     safe_summary = {
         key: value for key, value in summary.items()
         if key in {
-            "mode", "country", "city", "segment", "places_seen", "site_checks",
+            "mode", "country", "city", "segment", "cities_attempted", "city_data_failures", "places_seen", "site_checks",
             "published_emails_found", "qualified", "saved", "reminders_claimed",
             "prepared", "accepted_by_provider", "failed_or_blocked", "live_send_block",
         }
@@ -252,6 +252,8 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
         summary = {
             "mode": "LIVE" if live else "PREVIEW",
             "country": discovery["country"],
+            "cities_attempted": discovery["cities_attempted"],
+            "city_data_failures": discovery["city_data_failures"],
             "city": discovery["city"],
             "segment": discovery["segment"],
             "places_seen": discovery["places_seen"],

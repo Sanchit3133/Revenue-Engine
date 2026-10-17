@@ -32,6 +32,7 @@ ROBOTS_TIMEOUT = 5
 MAX_PAGE_BYTES = 1_500_000
 MAX_PAGES_PER_SITE = 5
 MAX_SITE_CHECKS_PER_RUN = 15
+MAX_CITIES_PER_RUN = 3
 MAX_NEW_LEADS = 5
 BOT_TOKEN = "RevenueEngineProspectingBot"
 HEADERS = {"User-Agent": "RevenueEngineProspectingBot/1.0 (+https://sanchit-agarwal.me/257-2/)"}
@@ -59,7 +60,8 @@ class DiscoveryError(RuntimeError):
     """Safe, operator-facing discovery error without provider payloads."""
 
 
-def choose_random_city(country: str = "India", *, rng=None) -> tuple[City, str]:
+def _eligible_cities(country: str = "India") -> tuple[list[City], str]:
+    """Load the eligible city pool once for a bounded discovery cycle."""
     market = get_market(country)
     code = COUNTRY_CODES.get(market.country.lower())
     if not code:
@@ -72,7 +74,26 @@ def choose_random_city(country: str = "India", *, rng=None) -> tuple[City, str]:
     cities = parse_cities_zip(response.content, country_code=code, min_population=40000)
     if not cities:
         raise DiscoveryError("No eligible cities were found; discovery stopped.")
-    return (rng or random.SystemRandom()).choice(cities), market.country
+    return cities, market.country
+
+
+def choose_random_city(country: str = "India", *, rng=None) -> tuple[City, str]:
+    cities, canonical_country = _eligible_cities(country)
+    return (rng or random.SystemRandom()).choice(cities), canonical_country
+
+
+def _weighted_segment_order(*, rng=None) -> list[tuple[str, int, str, tuple[str, ...]]]:
+    """Return a randomized segment order, weighted by the configured segment priorities."""
+    chooser = rng or random.SystemRandom()
+    remaining = list(SEGMENTS)
+    ordered = []
+    while remaining:
+        selected = chooser.choices(
+            remaining, weights=[item[1] for item in remaining], k=1
+        )[0]
+        ordered.append(selected)
+        remaining.remove(selected)
+    return ordered
 
 
 def choose_random_segment(*, rng=None) -> tuple[str, str, tuple[str, ...]]:
@@ -405,78 +426,179 @@ def find_official_email(website: str) -> tuple[str, str]:
 
 
 def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=None, persist: bool = True) -> dict:
-    """Discover and persist up to five qualified leads, returning aggregate counts only."""
+    """Discover up to five leads across a few random cities, with one shared website-check cap."""
     if not 1 <= max_new <= MAX_NEW_LEADS:
         raise ValueError(f"max_new must be between 1 and {MAX_NEW_LEADS}")
-    city, canonical_country = choose_random_city(country, rng=rng)
-    segment, query, keywords = choose_random_segment(rng=rng)
-    features = download_city_places(city)
-    # Do not inspect the full place dump in one run. Shuffle its records and
-    # check a bounded sample so one slow city cannot exceed the worker timeout.
-    (rng or random.SystemRandom()).shuffle(features)
-    known_places = {row["place_id"] for row in conn.execute("SELECT place_id FROM leads WHERE place_id IS NOT NULL").fetchall() if row["place_id"]}
-    known_emails = {normalize_email(row["email"]) for row in conn.execute("SELECT email FROM leads WHERE email IS NOT NULL AND trim(email) <> ''").fetchall() if row["email"]}
-    suppressed = {normalize_email(row["email"]) for row in conn.execute("SELECT email FROM suppressions").fetchall() if row["email"]}
-    seen_ids, seen_emails, candidates = set(), set(), []
-    stats = {"places_seen": len(features), "site_checks": 0, "published_emails_found": 0, "qualified": 0, "saved": 0}
-    for raw in features:
-        if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN:
+
+    chooser = rng or random.SystemRandom()
+    eligible_cities, canonical_country = _eligible_cities(country)
+    city_order = list(eligible_cities)
+    chooser.shuffle(city_order)
+    cities_to_try = city_order[:MAX_CITIES_PER_RUN]
+    segment_order = _weighted_segment_order(rng=chooser)
+
+    known_places = {
+        row["place_id"]
+        for row in conn.execute(
+            "SELECT place_id FROM leads WHERE place_id IS NOT NULL"
+        ).fetchall()
+        if row["place_id"]
+    }
+    known_emails = {
+        normalize_email(row["email"])
+        for row in conn.execute(
+            "SELECT email FROM leads WHERE email IS NOT NULL AND trim(email) <> ''"
+        ).fetchall()
+        if row["email"]
+    }
+    suppressed = {
+        normalize_email(row["email"])
+        for row in conn.execute("SELECT email FROM suppressions").fetchall()
+        if row["email"]
+    }
+
+    seen_ids: set[str] = set()
+    seen_emails: set[str] = set()
+    candidates: list[dict] = []
+    cities_attempted: list[str] = []
+    segments_used: list[str] = []
+    stats = {
+        "places_seen": 0,
+        "site_checks": 0,
+        "published_emails_found": 0,
+        "qualified": 0,
+        "saved": 0,
+        "cities_attempted": 0,
+        "city_data_failures": 0,
+    }
+
+    for city in cities_to_try:
+        if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN or len(candidates) >= max_new:
             break
-        place = normalize_feature(raw)
-        if not place or place["place_id"] in known_places or place["place_id"] in seen_ids:
+
+        cities_attempted.append(city.name)
+        try:
+            features = download_city_places(city)
+        except RuntimeError as exc:
+            # A city-specific dataset failure should not block the remaining random cities.
+            # Missing installation/configuration and size-limit errors remain fatal.
+            if str(exc) != "Overture Maps could not provide the bounded city data.":
+                raise
+            stats["city_data_failures"] += 1
             continue
-        seen_ids.add(place["place_id"])
-        combined = (place["business_name"] + " " + place["category_text"]).lower()
-        if not any(term in combined for term in keywords):
-            continue
-        stats["site_checks"] += 1
-        email, signal = find_official_email(place["website"])
-        if not email:
-            continue
-        stats["published_emails_found"] += 1
-        email = normalize_email(email)
-        if not is_valid_public_email(email) or email in known_emails or email in seen_emails or email in suppressed:
-            continue
-        scored = score_business(place["business_name"], place["category_text"], place["website"], signal, query)
-        if scored.score < 30:
-            continue
-        priority, priority_score, reasons = lead_priority(place["business_name"], email, scored.score)
-        notes = [
-            *scored.reasons, *reasons,
-            f"first_sale_priority={priority}",
-            f"priority_score={priority_score}",
-            f"discovery_source=Overture Maps Places; segment={segment}",
-            f"discovery_city={city.name}; city_source=GeoNames cities15000; city_license=CC BY 4.0",
-            f"overture_source_records={','.join(place['source_names']) or 'unspecified'}",
-            "overture_source_licenses=" + ",".join(sorted({license_name for _, license_name in place["source_licenses"]})),
-            f"data_attribution={OVERTURE_ATTRIBUTION}",
-            "email_evidence=publicly displayed on the business's official HTTPS website",
-        ]
-        candidates.append({
-            **place, "email": email, "country": canonical_country,
-            "qualification": scored.qualification, "score": scored.score,
-            "signal": signal, "notes": "; ".join(notes),
-            "priority": priority, "priority_score": priority_score,
-        })
-        seen_emails.add(email)
+
+        stats["places_seen"] += len(features)
+        chooser.shuffle(features)
+
+        for raw in features:
+            if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN or len(candidates) >= max_new:
+                break
+
+            place = normalize_feature(raw)
+            if not place:
+                continue
+
+            place_id = place["place_id"]
+            if place_id in known_places or place_id in seen_ids:
+                continue
+            seen_ids.add(place_id)
+
+            combined = (place["business_name"] + " " + place["category_text"]).lower()
+            matched_segment = next(
+                (
+                    item for item in segment_order
+                    if any(term in combined for term in item[3])
+                ),
+                None,
+            )
+            if matched_segment is None:
+                continue
+
+            segment, _weight, query, _keywords = matched_segment
+            if segment not in segments_used:
+                segments_used.append(segment)
+
+            stats["site_checks"] += 1
+            email, signal = find_official_email(place["website"])
+            if not email:
+                continue
+
+            stats["published_emails_found"] += 1
+            email = normalize_email(email)
+            if (
+                not is_valid_public_email(email)
+                or email in known_emails
+                or email in seen_emails
+                or email in suppressed
+            ):
+                continue
+
+            scored = score_business(
+                place["business_name"], place["category_text"],
+                place["website"], signal, query
+            )
+            if scored.score < 30:
+                continue
+
+            priority, priority_score, reasons = lead_priority(
+                place["business_name"], email, scored.score
+            )
+            notes = [
+                *scored.reasons,
+                *reasons,
+                f"first_sale_priority={priority}",
+                f"priority_score={priority_score}",
+                f"discovery_source=Overture Maps Places; segment={segment}",
+                f"discovery_city={city.name}; city_source=GeoNames cities15000; city_license=CC BY 4.0",
+                f"overture_source_records={','.join(place['source_names']) or 'unspecified'}",
+                "overture_source_licenses=" + ",".join(
+                    sorted({license_name for _, license_name in place["source_licenses"]})
+                ),
+                f"data_attribution={OVERTURE_ATTRIBUTION}",
+                "email_evidence=publicly displayed on the business's official HTTPS website",
+            ]
+            candidates.append({
+                **place,
+                "email": email,
+                "country": canonical_country,
+                "qualification": scored.qualification,
+                "score": scored.score,
+                "signal": signal,
+                "notes": "; ".join(notes),
+                "priority": priority,
+                "priority_score": priority_score,
+            })
+            seen_emails.add(email)
+
     order = {"A": 0, "B": 1, "C": 2}
     candidates.sort(key=lambda item: (
         order.get(item["priority"], 3), -item["priority_score"], -item["score"],
         item["business_name"].lower(),
     ))
     stats["qualified"] = min(len(candidates), max_new)
+    stats["cities_attempted"] = len(cities_attempted)
+
     saved_ids = []
-    if not persist:
-        return {"city": city.name, "segment": segment, "country": canonical_country, **stats, "lead_ids": []}
-    for item in candidates[:max_new]:
-        try:
-            lead_id = save_lead(conn, item)
-        except INTEGRITY_ERRORS:
-            conn.rollback()
-            lead_id = None
-        if lead_id is not None:
-            stats["saved"] += 1
-            saved_ids.append(int(lead_id))
-            known_places.add(item["place_id"])
-            known_emails.add(normalize_email(item["email"]))
-    return {"city": city.name, "segment": segment, "country": canonical_country, **stats, "lead_ids": saved_ids}
+    if persist:
+        for item in candidates[:max_new]:
+            try:
+                lead_id = save_lead(conn, item)
+            except INTEGRITY_ERRORS:
+                conn.rollback()
+                lead_id = None
+            if lead_id is not None:
+                stats["saved"] += 1
+                saved_ids.append(int(lead_id))
+                known_places.add(item["place_id"])
+                known_emails.add(normalize_email(item["email"]))
+
+    city_label = ", ".join(cities_attempted) or "none"
+    segment_label = ", ".join(segments_used) or "mixed_education"
+    return {
+        "city": city_label,
+        "segment": segment_label,
+        "country": canonical_country,
+        **stats,
+        "lead_ids": saved_ids,
+    }
+
