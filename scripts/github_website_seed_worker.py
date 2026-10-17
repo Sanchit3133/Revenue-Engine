@@ -201,23 +201,35 @@ def _text(soup: BeautifulSoup, limit: int = 6000) -> str:
 
 def extract_business_name(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
+    generic_names = {
+        "home", "homepage", "welcome", "official website",
+        "contact", "contact us", "about", "about us",
+        "admission", "admissions", "enquiry", "enquiries",
+    }
     for selector in ('meta[property="og:site_name"]', "h1", "title"):
         node = soup.select_one(selector)
         if node is None:
             continue
         if node.name == "meta":
-            value = (node.get("content") or "").strip()
+            raw_value = (node.get("content") or "").strip()
         else:
-            value = node.get_text(" ", strip=True)
-        value = re.sub(r"\s+", " ", value).strip(" -|—–:")
-        if not value or value.casefold() in {"home", "homepage", "welcome", "official website"}:
-            continue
-        if selector == "title":
-            value = re.split(r"\s+[|—–]\s+|\s+-\s+", value, maxsplit=1)[0].strip()
-        if len(value) >= 2:
-            return value[:200]
+            raw_value = node.get_text(" ", strip=True)
+        raw_value = re.sub(r"\\s+", " ", raw_value).strip(" -|—–:")
+        values = (
+            re.split(r"\\s+[|—–]\\s+|\\s+-\\s+", raw_value)
+            if selector == "title"
+            else [raw_value]
+        )
+        # Titles often contain "Home - Business Name" or
+        # "Contact Us | Business Name"; skip generic segments rather than
+        # accidentally treating those words as the company name.
+        for candidate in values:
+            candidate = candidate.strip(" -|—–:")
+            if not candidate or candidate.casefold() in generic_names:
+                continue
+            if len(candidate) >= 2:
+                return candidate[:200]
     return ""
-
 
 def extract_public_email(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
