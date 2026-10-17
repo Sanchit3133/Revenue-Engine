@@ -244,22 +244,52 @@ def _robots(base: str) -> RobotFileParser | None:
     return parser
 
 
-def _fetch_html(base: str, url: str) -> str:
+def _fetch_html(base: str, url: str, robots: RobotFileParser | None = None) -> str:
+    """Fetch HTML without ever following a cross-host or robots-disallowed redirect."""
+    current = url
     try:
-        with requests.get(url, headers=HEADERS, timeout=REQUEST_TIMEOUT, stream=True, allow_redirects=True) as response:
-            if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
+        for _ in range(6):
+            if not _same_host(base, current):
                 return ""
-            if not _same_host(base, response.url):
+            if robots is not None and not robots.can_fetch(BOT_TOKEN, current):
                 return ""
-            length = response.headers.get("content-length")
-            if length and int(length) > MAX_PAGE_BYTES:
-                return ""
-            chunks = bytearray()
-            for chunk in response.iter_content(32768):
-                chunks.extend(chunk)
-                if len(chunks) > MAX_PAGE_BYTES:
+            response = requests.get(
+                current,
+                headers=HEADERS,
+                timeout=REQUEST_TIMEOUT,
+                stream=True,
+                allow_redirects=False,
+            )
+            if response.status_code in {301, 302, 303, 307, 308}:
+                location = response.headers.get("Location")
+                response.close()
+                if not location:
                     return ""
-            return bytes(chunks).decode(response.encoding or "utf-8", errors="replace")
+                candidate = urljoin(current, location)
+                if not _same_host(base, candidate):
+                    return ""
+                if robots is not None and not robots.can_fetch(BOT_TOKEN, candidate):
+                    return ""
+                current = candidate
+                continue
+
+            try:
+                if response.status_code != 200 or "text/html" not in response.headers.get("content-type", "").lower():
+                    return ""
+                length = response.headers.get("content-length")
+                if length and int(length) > MAX_PAGE_BYTES:
+                    return ""
+                chunks = bytearray()
+                for chunk in response.iter_content(32768):
+                    if not chunk:
+                        continue
+                    chunks.extend(chunk)
+                    if len(chunks) > MAX_PAGE_BYTES:
+                        return ""
+                return bytes(chunks).decode(response.encoding or "utf-8", errors="replace")
+            finally:
+                response.close()
+        return ""
     except (requests.RequestException, ValueError, OSError):
         return ""
 
@@ -297,9 +327,9 @@ def find_official_email(website: str) -> tuple[str, str]:
     if robots is None or not robots.can_fetch(BOT_TOKEN, base + "/"):
         return "", "robots_unavailable_or_disallowed"
     homepage_url = base + "/"
-    home = _fetch_html(base, homepage_url)
+    home = _fetch_html(base, homepage_url, robots)
     if not home:
-        home = _fetch_html(base, base)
+        home = _fetch_html(base, base, robots)
     if not home:
         return "", "homepage_unavailable"
     found = _emails_from_html(home)
@@ -327,7 +357,7 @@ def find_official_email(website: str) -> tuple[str, str]:
             continue
         visited.add(url)
         time.sleep(0.25)
-        page = _fetch_html(base, url)
+        page = _fetch_html(base, url, robots)
         if not page:
             continue
         found = _emails_from_html(page)
