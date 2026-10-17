@@ -17,7 +17,7 @@ India remains enabled as a domestic benchmark. International markets remain elig
 - GitHub: version control and reviewed release branch.
 - Replit: Flask web runtime, customer consultation, Hugging Face calls, owner dashboard, request queue and webhook routes.
 - Hugging Face: inference API called server-side; its token belongs in Replit deployment secrets, never in browser code or Git.
-- Database: current release uses SQLite. The deployment must provide persistent storage for `OUTREACH_DB`; otherwise port and test the data layer against a managed PostgreSQL database before real customer records or live outreach are enabled.
+- Database: Replit preview and published runtime use separate managed PostgreSQL databases through their environment-specific `DATABASE_URL`. SQLite remains for local development and isolated tests; production refuses a SQLite fallback. Schema changes are applied to production through Replit Publish, not app startup.
 - Static website: GitHub Pages; connect it to the published Flask HTTPS URL only after backend routes, consent, session cookies and storage have passed smoke tests.
 
 ## Do not do these things
@@ -26,4 +26,4 @@ India remains enabled as a domestic benchmark. International markets remain elig
 - Do not replace `main` or the website repository with the backend source.
 - Do not launch a live campaign from lead discovery alone.
 - Do not send a generated delivery file before owner login, written-scope confirmation and payment verification.
-- Do not publish a SQLite-backed app to an ephemeral filesystem and assume customer records will survive restarts.
+- Do not assume the preview and production databases are the same, select Publish's overwrite-data option unintentionally, or rely on app-code rollback to restore production data.

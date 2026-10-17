@@ -22,6 +22,19 @@ class TestConfiguration(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "MAX_SEND_DELAY"):
                 load_settings()
 
+    def test_published_environment_requires_postgresql_url(self):
+        with patch.dict(
+            os.environ,
+            {
+                "ENVIRONMENT": "development",
+                "REPL_DEPLOYMENT": "1",
+                "DATABASE_URL": "",
+            },
+            clear=False,
+        ):
+            with self.assertRaisesRegex(ValueError, "DATABASE_URL"):
+                load_settings()
+
 
 if __name__ == "__main__":
     unittest.main()

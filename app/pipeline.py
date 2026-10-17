@@ -1,7 +1,7 @@
 """Revenue pipeline state transitions with explicit terminal-state safeguards."""
 
 from __future__ import annotations
-import sqlite3
+from typing import Any
 from app.models import LeadState
 
 TERMINAL_STATES = {
@@ -16,7 +16,7 @@ TERMINAL_STATES = {
 
 
 def transition(
-    conn: sqlite3.Connection,
+    conn: Any,
     lead_id: int,
     new_state: LeadState,
     reason: str = "",

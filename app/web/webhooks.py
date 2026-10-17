@@ -6,7 +6,7 @@ import json
 from flask import Blueprint, current_app, jsonify, request
 
 from app.config import settings
-from app.database import connect, init_db
+from app.database import connect, health_check
 from app.webhook_processing import (
     process_brevo_event,
     process_razorpay_event,
@@ -34,15 +34,12 @@ def _brevo_received_token() -> str | None:
 def healthz():
     """Readiness check confirms the configured database can be opened."""
     try:
-        init_db()
-        with connect() as conn:
-            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
-        if integrity != "ok":
-            return jsonify({"status": "error", "service": "revenue-engine", "check": "database_integrity"}), 503
+        backend = health_check()
     except Exception:
-        current_app.logger.exception("Revenue Engine health check failed")
+        # Do not log driver exceptions; they may contain a connection URL.
+        current_app.logger.warning("Revenue Engine database health check failed")
         return jsonify({"status": "error", "service": "revenue-engine", "check": "database_unavailable"}), 503
-    return jsonify({"status": "ok", "service": "revenue-engine", "database": "ok"}), 200
+    return jsonify({"status": "ok", "service": "revenue-engine", "database": backend}), 200
 
 
 @webhooks_bp.post("/webhooks/brevo")
@@ -60,7 +57,6 @@ def brevo_webhook():
     if any(not isinstance(event, dict) for event in events):
         return jsonify({"error": "each_event_must_be_object"}), 400
 
-    init_db()
     results = []
     with connect() as conn:
         for event in events:
@@ -85,7 +81,6 @@ def razorpay_webhook():
     if not isinstance(payload, dict):
         return jsonify({"error": "payload_must_be_object"}), 400
 
-    init_db()
     with connect() as conn:
         result = process_razorpay_event(conn, payload)
     if result.get("reconciliation_required"):

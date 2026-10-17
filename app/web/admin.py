@@ -14,7 +14,7 @@ from flask import url_for
 from flask import Blueprint, abort, flash, redirect, render_template, request, send_file, session
 
 from app.config import settings
-from app.database import connect, init_db
+from app.database import connect
 from app.notifications import deliver_approved_file
 from app.models import LeadState
 from app.outreach import prepare_first_contact
@@ -67,7 +67,6 @@ def _audit(conn, action: str, public_id: str | None, details: str = "") -> None:
 
 
 def _record_module_run(module: str, status: str, summary: str, log_text: str = "") -> None:
-    init_db()
     with connect() as conn:
         conn.execute(
             "INSERT INTO module_runs(module,status,summary,log_text) VALUES(?,?,?,?)",
@@ -118,7 +117,6 @@ def owner_logout():
 @admin_bp.get("/owner")
 @_owner_required
 def owner_dashboard():
-    init_db()
     with connect() as conn:
         metrics = {
             "leads": conn.execute("SELECT COUNT(*) FROM leads").fetchone()[0],
@@ -248,7 +246,6 @@ def update_client_request(request_id: int):
     if not _csrf_valid(request.form.get("csrf_token", "")):
         abort(400, description="Invalid CSRF token")
     action = (request.form.get("action") or "").strip()
-    init_db()
     with connect() as conn:
         row = conn.execute("SELECT * FROM client_requests WHERE id=?", (request_id,)).fetchone()
         if row is None:
@@ -394,7 +391,6 @@ def record_prospect_reply():
     if lead_id < 1 or not from_email or "@" not in from_email or len(body) < 1:
         flash("Enter a valid lead ID, sender email, and reply body.", "error")
         return redirect(url_for("admin.owner_dashboard") + "#replies")
-    init_db()
     with connect() as conn:
         lead = conn.execute("SELECT id,email,business_name FROM leads WHERE id=?", (lead_id,)).fetchone()
         if lead is None:
@@ -468,7 +464,6 @@ def save_market_validation():
     status = "VALIDATED" if market_validation_complete(checks, notes) else "RESEARCH_REQUIRED"
     validated_at = datetime.now(timezone.utc).isoformat() if status == "VALIDATED" else None
 
-    init_db()
     with connect() as conn:
         conn.execute(
             """INSERT INTO market_validations (
@@ -551,7 +546,6 @@ def prepare_outreach_records():
     if not 1 <= limit <= 10:
         flash("Preparation limit must be from 1 to 10.", "error")
         return redirect(url_for("admin.owner_dashboard") + "#outreach")
-    init_db()
     output = []
     prepared = skipped = 0
     with connect() as conn:
@@ -595,7 +589,6 @@ def send_one_prepared_email():
     if not configured:
         flash(f"Sending is disabled: {provider} credentials/sender are missing.", "error")
         return redirect(url_for("admin.owner_dashboard") + "#outreach")
-    init_db()
     with connect() as conn:
         prepared = conn.execute(
             """SELECT o.id AS outreach_id,l.country,l.business_name
@@ -630,7 +623,6 @@ def send_one_prepared_email():
 @admin_bp.get("/owner/requests/<int:request_id>/download")
 @_owner_required
 def download_draft(request_id: int):
-    init_db()
     with connect() as conn:
         row = conn.execute("SELECT public_id,draft_filename,draft_content FROM client_requests WHERE id=?", (request_id,)).fetchone()
     if row is None or not row["draft_content"] or not row["draft_filename"]:

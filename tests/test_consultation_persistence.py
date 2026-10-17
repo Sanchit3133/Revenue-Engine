@@ -19,6 +19,7 @@ class TestConsultationPersistence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "consult.db"
             with patch.object(database, "settings", SimpleNamespace(db_path=path)):
+                database.init_db()
                 app = create_app({"TESTING": True, "SECRET_KEY": "test-secret"})
                 client = app.test_client()
                 get_response = client.get("/consultation")

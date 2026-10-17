@@ -10,7 +10,7 @@ import requests
 from flask import Blueprint, jsonify, request, session
 
 from app.config import settings
-from app.database import connect, init_db
+from app.database import connect
 from app.web.session_state import get_current_consultation
 
 assistant_bp = Blueprint("assistant", __name__)
@@ -74,7 +74,6 @@ def consultation_assistant_history():
     data = get_current_consultation()
     if not isinstance(data, dict) or not data.get("contact_consent") or not data.get("submission_public_id"):
         return jsonify({"messages": []}), 200
-    init_db()
     with connect() as conn:
         rows = conn.execute(
             "SELECT role, content, created_at FROM consultation_messages WHERE consultation_public_id=? ORDER BY id DESC LIMIT 12",
@@ -107,7 +106,6 @@ def consultation_assistant():
     recent.append(now)
     session["assistant_request_timestamps"] = recent[-20:]
     public_id = data["submission_public_id"]
-    init_db()
     with connect() as conn:
         history_rows = conn.execute(
             "SELECT role, content FROM consultation_messages WHERE consultation_public_id=? ORDER BY id DESC LIMIT 8",
