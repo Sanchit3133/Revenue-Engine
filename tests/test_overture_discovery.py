@@ -63,14 +63,15 @@ class TestOvertureSource(unittest.TestCase):
                 "confidence": 0.9,
                 "taxonomy": {"primary": "education"},
                 "emails": ["somebody@not-the-official-site.example"],
-                "sources": [{"dataset": "ExampleOpenData"}],
+                "sources": [{"dataset": "meta", "license": "CDLA-Permissive-2.0"}],
             }
         }
         record = normalize_feature(feature)
         self.assertIsNotNone(record)
         self.assertNotIn("email", record)
         self.assertIn("place_id", record)
-        self.assertEqual(record["source_names"], ["ExampleOpenData"])
+        self.assertEqual(record["source_names"], ["meta"])
+        self.assertEqual(record["source_licenses"], [("meta", "CDLA-Permissive-2.0")])
 
     def test_email_extraction_uses_published_addresses_only(self):
         addresses = _emails_from_html(
@@ -81,6 +82,17 @@ class TestOvertureSource(unittest.TestCase):
         self.assertIn("admissions@school.example", addresses)
         self.assertIn("info@school.example", addresses)
         self.assertNotIn("placeholder@example.com", addresses)
+
+    def test_rejects_missing_or_foursquare_source_license(self):
+        base = {
+            "id": "place-license",
+            "names": {"primary": "Example Coaching Institute"},
+            "websites": ["https://example.in/"],
+            "confidence": 0.9,
+            "taxonomy": {"primary": "education"},
+        }
+        self.assertIsNone(normalize_feature({"properties": {**base, "sources": [{"dataset": "unknown"}]}}))
+        self.assertIsNone(normalize_feature({"properties": {**base, "sources": [{"dataset": "Foursquare", "license": "Apache-2.0"}]}}))
 
     def test_random_segment_comes_from_configured_market_profiles(self):
         segment, query, keywords = choose_random_segment(rng=random.Random(7))
