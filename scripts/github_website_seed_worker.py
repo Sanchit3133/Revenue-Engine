@@ -64,6 +64,12 @@ def parse_website_urls(value: str, max_sites: int = MAX_SITES) -> list[str]:
         host = parsed.hostname.lower().rstrip(".")
         if host in {"localhost"} or host.endswith((".local", ".internal", ".localhost")):
             raise ValueError("Local or internal hostnames are not permitted.")
+        try:
+            ipaddress.ip_address(host)
+        except ValueError:
+            pass
+        else:
+            raise ValueError("IP-literal website seeds are not permitted.")
         host_key = host.removeprefix("www.")
         if host_key in seen_hosts:
             continue
@@ -111,7 +117,7 @@ def _validate_target(url: str, seed_host: str) -> bool:
         return False
 
 
-def _safe_get(url: str, seed_host: str) -> tuple[int, str, str] | None:
+def _safe_get(url: str, seed_host: str, *, require_html: bool = True) -> tuple[int, str, str] | None:
     """GET a same-site HTTPS page, validate every redirect, and cap response size."""
     current = url
     for _ in range(4):
@@ -152,7 +158,9 @@ def _safe_get(url: str, seed_host: str) -> tuple[int, str, str] | None:
         finally:
             response.close()
 
-        if status != 200 or "text/html" not in content_type:
+        if status != 200:
+            return (status, current, "")
+        if require_html and "text/html" not in content_type:
             return (status, current, "")
         body = b"".join(chunks)
         encoding = response.encoding or "utf-8"
@@ -169,7 +177,7 @@ def _safe_get(url: str, seed_host: str) -> tuple[int, str, str] | None:
 
 def _robots_policy(base_url: str, seed_host: str) -> RobotFileParser | None:
     robots_url = urljoin(base_url, "/robots.txt")
-    result = _safe_get(robots_url, seed_host)
+    result = _safe_get(robots_url, seed_host, require_html=False)
     if result is None:
         # Fail closed if robots.txt cannot be retrieved reliably.
         return None
@@ -333,23 +341,37 @@ def inspect_candidates(websites: list[str], country: str) -> tuple[list[dict[str
     market = get_market(country)
     candidates: list[dict[str, Any]] = []
     counts = {"sites_submitted": len(websites), "sites_inspected": 0, "qualified": 0, "duplicates_or_suppressed": 0}
-    # Silence libraries/helpers here too; only aggregate counts are printed by main().
+
+    # Read only the small fields needed for de-duplication, then close the
+    # database transaction before making HTTP requests to public websites.
     with redirect_stdout(StringIO()):
         with connect() as conn:
             conn.execute("SET TRANSACTION READ ONLY")
             _verify_required_tables(conn)
-            for website in websites:
-                counts["sites_inspected"] += 1
-                candidate = inspect_official_website(website, market.country)
-                if not candidate:
-                    continue
-                if _is_duplicate(conn, candidate):
-                    counts["duplicates_or_suppressed"] += 1
-                    continue
-                candidates.append(candidate)
-                counts["qualified"] += 1
-    return candidates, counts
+            rows = conn.execute(
+                "SELECT lower(email), lower(rtrim(website, '/')) FROM leads WHERE email IS NOT NULL OR website IS NOT NULL"
+            ).fetchall()
+            existing_emails = {str(row[0]) for row in rows if row[0]}
+            existing_websites = {str(row[1]) for row in rows if row[1]}
+            rows = conn.execute("SELECT lower(email) FROM suppressions").fetchall()
+            suppressed_emails = {str(row[0]) for row in rows if row[0]}
 
+        for website in websites:
+            counts["sites_inspected"] += 1
+            candidate = inspect_official_website(website, market.country)
+            if not candidate:
+                continue
+            email_key = candidate["email"].lower()
+            website_key = candidate["website"].rstrip("/").lower()
+            if email_key in existing_emails or website_key in existing_websites or email_key in suppressed_emails:
+                counts["duplicates_or_suppressed"] += 1
+                continue
+            candidates.append(candidate)
+            existing_emails.add(email_key)
+            existing_websites.add(website_key)
+            counts["qualified"] += 1
+
+    return candidates, counts
 
 def persist_candidates(candidates: list[dict[str, Any]], country: str) -> dict[str, int]:
     results = {"saved": 0, "duplicates_or_suppressed": 0, "rejected": 0}
