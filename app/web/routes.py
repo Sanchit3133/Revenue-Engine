@@ -7,6 +7,7 @@ import secrets
 
 from app.database import connect, init_db
 from app.web.session_state import default_consultation, get_current_consultation, save_consultation
+from app.consultation_handoff import resolve_handoff
 import logging
 
 from app.consultation import (
@@ -190,6 +191,26 @@ def consultation():
     question = None
     explanation = None
 
+    # An opaque, expiring handoff token may prefill the public form. Personal
+    # details are not put in the URL and are not saved until the prospect consents.
+    handoff_raw = (
+        (request.form.get("handoff_token") or "").strip()
+        if request.method == "POST"
+        else (request.args.get("h") or "").strip()
+    )
+    if not data.get("business_name") and handoff_raw:
+        with connect() as conn:
+            handoff = resolve_handoff(conn, handoff_raw)
+        if handoff:
+            data["handoff_prefill"] = {
+                "business_name": handoff["business_name"],
+                "email": handoff["email"],
+                "website": handoff["website"],
+                "token": handoff_raw,
+            }
+        elif request.method == "GET":
+            error = "This consultation link has expired or has already been used. You can still start a fresh consultation."
+
     if request.method == "POST" and not secrets.compare_digest(
         str(session.get("consultation_csrf_token", "")),
         str(request.form.get("consultation_csrf_token", "")),
@@ -229,6 +250,11 @@ def consultation():
 
             contact_email = request.form.get("contact_email", "").strip()[:254]
             contact_consent = request.form.get("contact_consent") == "yes"
+            submitted_handoff_token = (request.form.get("handoff_token") or "").strip()
+            handoff = None
+            if submitted_handoff_token:
+                with connect() as conn:
+                    handoff = resolve_handoff(conn, submitted_handoff_token)
 
             business_type = request.form.get(
                 "business_type",
@@ -255,7 +281,11 @@ def consultation():
                 "",
             ).strip()[:1000]
 
-            if not business_name or not business_type or not biggest_problem:
+            if submitted_handoff_token and not handoff:
+                error = "This consultation link has expired or has already been used. Open a fresh consultation link and try again."
+            elif handoff and contact_email.strip().lower() != handoff["email"]:
+                error = "For security, use the business email address associated with this consultation link."
+            elif not business_name or not business_type or not biggest_problem:
                 error = "Please complete the required fields before continuing."
             elif not _valid_contact_email(contact_email):
                 error = "Please enter a valid business email address."
@@ -268,6 +298,8 @@ def consultation():
                         "business_name": business_name,
                         "contact_email": contact_email,
                         "contact_consent": True,
+                        "lead_id": int(handoff["lead_id"]) if handoff else data.get("lead_id"),
+                        "handoff_token_hash": handoff["token_hash"] if handoff else data.get("handoff_token_hash"),
                         "business_type": business_type,
                         "website": website,
                         "customer_process": customer_process,
@@ -278,7 +310,22 @@ def consultation():
                     }
                 )
 
-                _save_session_data(data)
+                data.pop("handoff_prefill", None)
+                try:
+                    _save_session_data(data)
+                except ValueError:
+                    data = default_consultation()
+                    error = "This consultation link has expired or has already been used. Open a fresh consultation link and try again."
+                    return render_template(
+                        "consultation.html",
+                        data=data,
+                        assistant_csrf_token=assistant_csrf_token,
+                        consultation_csrf_token=consultation_csrf_token,
+                        question=None,
+                        explanation=None,
+                        result=None,
+                        error=error,
+                    )
 
                 return render_template(
                     "consultation.html",
