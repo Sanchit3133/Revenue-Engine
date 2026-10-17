@@ -56,15 +56,20 @@ def _plain_body(item: dict[str, Any]) -> str:
 def _match_lead(conn, sender: str, in_reply_to: str | None) -> int | None:
     if in_reply_to:
         row = conn.execute(
-            """SELECT lead_id FROM outreach
-               WHERE lower(COALESCE(provider,'')) = 'brevo'
-                 AND status = 'SENT'
-                 AND lower(replace(replace(trim(COALESCE(provider_message_id,'')), '<', ''), '>', '')) = ?
-               ORDER BY id DESC LIMIT 1""",
-            (in_reply_to,),
+            """SELECT o.lead_id FROM outreach o
+               JOIN leads l ON l.id = o.lead_id
+               WHERE lower(COALESCE(o.provider,'')) = 'brevo'
+                 AND o.status = 'SENT'
+                 AND lower(replace(replace(trim(COALESCE(o.provider_message_id,'')), '<', ''), '>', '')) = ?
+                 AND lower(trim(COALESCE(l.email,''))) = ?
+               ORDER BY o.id DESC LIMIT 1""",
+            (in_reply_to, sender),
         ).fetchone()
         if row is not None:
             return int(row["lead_id"])
+        # A thread/reference match is not enough when the sender doesn't match
+        # the saved recipient. Do not attach forwarded/spoofed messages.
+        return None
     if not sender:
         return None
     rows = conn.execute(
