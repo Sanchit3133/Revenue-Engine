@@ -7,6 +7,7 @@ and a validated target-market record. All contact details stay out of stdout.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import random
 import time
@@ -178,6 +179,24 @@ def _prepare_and_send_first_contacts(conn, *, max_sends: int, already_sent: int)
     return prepared, accepted, failed
 
 
+def _record_worker_run(conn, *, status: str, summary: dict) -> None:
+    """Store aggregate-only worker status for the authenticated owner dashboard."""
+    safe_summary = {
+        key: value for key, value in summary.items()
+        if key in {
+            "mode", "country", "city", "segment", "places_seen", "site_checks",
+            "published_emails_found", "qualified", "saved", "reminders_claimed",
+            "prepared", "accepted_by_provider", "failed_or_blocked", "live_send_block",
+        }
+    }
+    conn.execute(
+        """INSERT INTO module_runs(module, status, summary, log_text)
+           VALUES (?, ?, ?, NULL)""",
+        ("automated_acquisition", status[:40], json.dumps(safe_summary, sort_keys=True)[:1000]),
+    )
+    conn.commit()
+
+
 def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -> dict:
     if not 1 <= max_new <= 5:
         raise ValueError("max_new must be between 1 and 5")
@@ -220,6 +239,7 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
             return summary
         if not _market_ready(conn, discovery["country"]):
             summary["live_send_block"] = "market_validation_not_complete"
+            _record_worker_run(conn, status="blocked", summary=summary)
             return summary
 
         run_limit = min(int(settings.campaign_limit), int(settings.daily_limit))
@@ -239,6 +259,8 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
         summary["reminders_claimed"] = int(conn.execute(
             "SELECT COUNT(*) FROM follow_up_schedule WHERE status IN ('CLAIMED','PREPARED')"
         ).fetchone()[0])
+        cycle_status = "success" if summary["failed_or_blocked"] == 0 else "partial"
+        _record_worker_run(conn, status=cycle_status, summary=summary)
         return summary
 
 
@@ -255,8 +277,25 @@ def main() -> None:
     try:
         result = run_cycle(country=args.country, max_new=args.max_new, live=args.send)
     except (DiscoveryError, RuntimeError, ValueError) as exc:
-        # Safe messages only; provider or database exception strings may contain secrets.
+        # Safe messages only; never save exception text, URLs, recipients or provider payloads.
         print("Cycle stopped safely: " + str(exc)[:220])
+        if args.send:
+            try:
+                from app.database import connect
+                with connect() as conn:
+                    _record_worker_run(
+                        conn,
+                        status="blocked" if isinstance(exc, RuntimeError) else "failed",
+                        summary={
+                            "mode": "LIVE",
+                            "country": args.country,
+                            "failure_class": type(exc).__name__,
+                            "failed_or_blocked": 1,
+                        },
+                    )
+            except Exception:
+                # Status logging must never obscure the original safe error.
+                pass
         raise SystemExit(1)
     print("Revenue Engine automated cycle")
     for key, value in result.items():
