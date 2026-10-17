@@ -482,10 +482,18 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
         "city_data_failures": 0,
     }
 
+    # Distribute the total website-check budget across selected cities so one
+    # large city cannot consume every check before other cities are considered.
+    checks_per_city = max(
+        1,
+        (MAX_SITE_CHECKS_PER_RUN + len(cities_to_try) - 1) // len(cities_to_try),
+    )
+
     for city in cities_to_try:
         if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN or len(candidates) >= max_new:
             break
 
+        checks_before_city = stats["site_checks"]
         cities_attempted.append(city.name)
         try:
             features = download_city_places(city)
@@ -501,7 +509,11 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
         chooser.shuffle(features)
 
         for raw in features:
-            if stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN or len(candidates) >= max_new:
+            if (
+                stats["site_checks"] >= MAX_SITE_CHECKS_PER_RUN
+                or stats["site_checks"] - checks_before_city >= checks_per_city
+                or len(candidates) >= max_new
+            ):
                 break
 
             place = normalize_feature(raw)
