@@ -94,6 +94,50 @@ class TestFollowUpScheduler(unittest.TestCase):
         self.assertEqual(row["status"], SCHEDULED)
         self.assertIsNone(row["claimed_at"])
 
+    def test_stale_prepared_message_is_rescheduled_for_same_outreach_row(self):
+        schedule_next_follow_up(
+            self.conn, lead_id=self.lead_id, source_outreach_id=self.outreach_id,
+            accepted_attempt_number=1, sent_at=self.sent_at,
+        )
+        due = self.sent_at + timedelta(days=4, seconds=1)
+        schedule = claim_due_follow_ups(self.conn, limit=1, now=due)[0]
+        extra_id = self.conn.execute(
+            """INSERT INTO outreach(lead_id,email,subject,body,attempt_number,status)
+               VALUES(?,?,?,?,2,'PREPARED')""",
+            (self.lead_id, "hello@training.example", "Follow-up", "Same prepared email"),
+        ).lastrowid
+        self.conn.commit()
+        self.assertTrue(mark_follow_up_prepared(self.conn, schedule["id"], extra_id))
+        recovered = release_stale_claims(self.conn, now=due + timedelta(hours=2), age_minutes=60)
+        self.assertEqual(recovered, 1)
+        row = self.conn.execute("SELECT status,prepared_outreach_id FROM follow_up_schedule").fetchone()
+        self.assertEqual(row["status"], SCHEDULED)
+        self.assertEqual(row["prepared_outreach_id"], extra_id)
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM outreach WHERE lead_id=? AND attempt_number=2", (self.lead_id,)).fetchone()[0],
+            1,
+        )
+
+    def test_stale_sending_message_is_not_resent_automatically(self):
+        schedule_next_follow_up(
+            self.conn, lead_id=self.lead_id, source_outreach_id=self.outreach_id,
+            accepted_attempt_number=1, sent_at=self.sent_at,
+        )
+        due = self.sent_at + timedelta(days=4, seconds=1)
+        schedule = claim_due_follow_ups(self.conn, limit=1, now=due)[0]
+        extra_id = self.conn.execute(
+            """INSERT INTO outreach(lead_id,email,subject,body,attempt_number,status)
+               VALUES(?,?,?,?,2,'SENDING')""",
+            (self.lead_id, "hello@training.example", "Follow-up", "Outcome unknown"),
+        ).lastrowid
+        self.conn.commit()
+        self.assertTrue(mark_follow_up_prepared(self.conn, schedule["id"], extra_id))
+        recovered = release_stale_claims(self.conn, now=due + timedelta(hours=2), age_minutes=60)
+        self.assertEqual(recovered, 1)
+        row = self.conn.execute("SELECT status,cancellation_reason FROM follow_up_schedule").fetchone()
+        self.assertEqual(row["status"], FAILED)
+        self.assertIn("ambiguous_provider_state_after_crash", row["cancellation_reason"])
+
     def test_rejects_unbounded_claim_request(self):
         with self.assertRaises(ValueError):
             claim_due_follow_ups(self.conn, limit=100)
