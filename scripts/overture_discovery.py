@@ -227,16 +227,33 @@ def _same_host(base: str, candidate: str) -> bool:
 
 
 def _robots(base: str) -> RobotFileParser | None:
-    robots_url = base.split("/", 3)[0] + "//" + urlparse(base).netloc + "/robots.txt"
+    parsed_base = urlparse(base)
+    robots_url = f"https://{parsed_base.netloc}/robots.txt"
     try:
-        response = requests.get(robots_url, headers=HEADERS, timeout=10, allow_redirects=True)
-    except requests.RequestException:
-        return None
-    if response.status_code == 404:
-        rules = []
-    elif response.status_code == 200:
-        rules = response.text[:256000].splitlines()
-    else:
+        # Fail closed on redirects and cap the bytes read so robots.txt cannot
+        # redirect the worker to another host or provide an unbounded response.
+        with requests.get(
+            robots_url,
+            headers=HEADERS,
+            timeout=10,
+            stream=True,
+            allow_redirects=False,
+        ) as response:
+            if response.status_code == 404:
+                rules = []
+            elif response.status_code == 200:
+                content_length = response.headers.get("content-length")
+                if content_length and int(content_length) > 256_000:
+                    return None
+                content = bytearray()
+                for chunk in response.iter_content(16_384):
+                    content.extend(chunk)
+                    if len(content) > 256_000:
+                        return None
+                rules = bytes(content).decode("utf-8", errors="replace").splitlines()
+            else:
+                return None
+    except (requests.RequestException, ValueError, OSError):
         return None
     parser = RobotFileParser()
     parser.set_url(robots_url)
