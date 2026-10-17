@@ -90,9 +90,9 @@ def claim_due_follow_ups(conn: Any, *, limit: int = 5, now: datetime | None = No
     claimed: list[dict[str, Any]] = []
     for row in rows:
         cursor = conn.execute(
-            """UPDATE follow_up_schedule SET status = ?, updated_at = CURRENT_TIMESTAMP
+            """UPDATE follow_up_schedule SET status = ?, claimed_at = ?, updated_at = CURRENT_TIMESTAMP
                WHERE id = ? AND status = ? AND due_at <= ?""",
-            (CLAIMED, int(row["id"]), SCHEDULED, cutoff),
+            (CLAIMED, _utc_iso(now), int(row["id"]), SCHEDULED, cutoff),
         )
         if cursor.rowcount == 1:
             claimed.append(dict(row))
@@ -103,7 +103,7 @@ def claim_due_follow_ups(conn: Any, *, limit: int = 5, now: datetime | None = No
 def mark_follow_up_prepared(conn: Any, schedule_id: int, outreach_id: int) -> bool:
     cursor = conn.execute(
         """UPDATE follow_up_schedule
-           SET status = ?, prepared_outreach_id = ?, updated_at = CURRENT_TIMESTAMP
+           SET status = ?, prepared_outreach_id = ?, claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND status = ?""",
         (PREPARED, int(outreach_id), int(schedule_id), CLAIMED),
     )
@@ -111,11 +111,28 @@ def mark_follow_up_prepared(conn: Any, schedule_id: int, outreach_id: int) -> bo
     return cursor.rowcount == 1
 
 
+def release_stale_claims(conn: Any, *, now: datetime | None = None, age_minutes: int = 60) -> int:
+    """Recover claims left by a crashed worker; claiming alone never sends."""
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    threshold = _utc_iso(current - timedelta(minutes=max(1, int(age_minutes))))
+    cursor = conn.execute(
+        """UPDATE follow_up_schedule
+           SET status = ?, due_at = ?, claimed_at = NULL,
+               cancellation_reason = 'recovered_stale_claim', updated_at = CURRENT_TIMESTAMP
+           WHERE status = ? AND claimed_at IS NOT NULL AND claimed_at < ?""",
+        (SCHEDULED, _utc_iso(current), CLAIMED, threshold),
+    )
+    conn.commit()
+    return int(cursor.rowcount or 0)
+
+
 def finish_follow_up(conn: Any, schedule_id: int, *, accepted: bool, reason: str = "") -> bool:
     status = COMPLETED if accepted else FAILED
     cursor = conn.execute(
         """UPDATE follow_up_schedule
-           SET status = ?, cancellation_reason = ?, updated_at = CURRENT_TIMESTAMP
+           SET status = ?, cancellation_reason = ?, claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND status IN (?, ?)""",
         (status, str(reason)[:200] or None, int(schedule_id), CLAIMED, PREPARED),
     )
@@ -129,7 +146,7 @@ def release_claim(conn: Any, schedule_id: int, *, retry_at: datetime | None = No
         retry_at = datetime.now(timezone.utc) + timedelta(minutes=30)
     cursor = conn.execute(
         """UPDATE follow_up_schedule
-           SET status = ?, due_at = ?, cancellation_reason = ?, updated_at = CURRENT_TIMESTAMP
+           SET status = ?, due_at = ?, cancellation_reason = ?, claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND status = ?""",
         (SCHEDULED, _utc_iso(retry_at), str(reason)[:200], int(schedule_id), CLAIMED),
     )
