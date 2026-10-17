@@ -1,26 +1,42 @@
-"""Bounded lead discovery preview for GitHub Actions.
+"""Bounded, manual GitHub lead discovery that persists candidates without outreach.
 
-This command only reads the production database and public business pages. It never
-calls init_db(), persists leads, creates outreach records, or sends email.
-Logs contain aggregate counts only; individual contact details are suppressed.
+No schema initialization or migration occurs here. This job is separate from
+email preparation/delivery, examines at most five Places results, and uses a
+restricted PostgreSQL worker credential. Public Action logs contain counts only.
 """
 from __future__ import annotations
 
 import argparse
 from contextlib import redirect_stdout
 from io import StringIO
+from typing import Any
 from urllib.parse import urljoin, urlparse
 from unittest.mock import patch
 
 from app.config import settings
 from app.database import connect
-from app.lead_engine import normalize_email, normalize_website
+from app.lead_engine import is_valid_public_email, normalize_email, normalize_website
 from app.market_strategy import get_market
+from app.models import LeadState
+from app.pipeline import transition
 from scripts import discover_leads as discovery
+
+REQUIRED_TABLES = {"leads", "suppressions", "state_events"}
+
+
+def _verify_required_tables(conn: Any) -> None:
+    rows = conn.execute(
+        """SELECT table_name FROM information_schema.tables
+           WHERE table_schema = 'public' AND table_type = 'BASE TABLE'"""
+    ).fetchall()
+    present = {row[0] for row in rows}
+    missing = sorted(REQUIRED_TABLES - present)
+    if missing:
+        raise RuntimeError("Required worker tables are missing: " + ", ".join(missing))
 
 
 def _bounded_find_public_email(website: str) -> tuple[str, str]:
-    """Inspect only the homepage and two conventional contact pages."""
+    """Inspect only a homepage and two conventional contact pages per business."""
     normalized = normalize_website(website)
     if not normalized:
         return "", ""
@@ -41,7 +57,85 @@ def _bounded_find_public_email(website: str) -> tuple[str, str]:
     return "", ""
 
 
-def preview(city: str, country: str, query: str, max_places: int = 5) -> dict:
+def persist_candidates(conn: Any, candidates: list[dict[str, Any]], country: str) -> dict[str, int]:
+    """Persist up to five screened candidates; never create an outreach row."""
+    counts = {"persisted": 0, "duplicate": 0, "suppressed": 0, "invalid": 0}
+    for lead in candidates[:5]:
+        email = normalize_email(lead.get("email", ""))
+        place_id = str(lead.get("place_id") or "").strip()
+        if not place_id or not email or not is_valid_public_email(email):
+            counts["invalid"] += 1
+            continue
+
+        suppressed = conn.execute(
+            "SELECT 1 FROM suppressions WHERE lower(email)=lower(?) LIMIT 1",
+            (email,),
+        ).fetchone()
+        if suppressed is not None:
+            counts["suppressed"] += 1
+            continue
+
+        duplicate = conn.execute(
+            """SELECT 1 FROM leads
+               WHERE place_id = ? OR lower(email) = lower(?)
+               LIMIT 1""",
+            (place_id, email),
+        ).fetchone()
+        if duplicate is not None:
+            counts["duplicate"] += 1
+            continue
+
+        cursor = conn.execute(
+            """INSERT INTO leads (
+                   place_id, business_name, address, phone, website, email,
+                   country, qualification, score, signal, notes, state
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(place_id) DO NOTHING
+               RETURNING id""",
+            (
+                place_id,
+                (lead.get("business_name") or "").strip()[:200],
+                lead.get("address") or "",
+                lead.get("phone") or "",
+                lead.get("website") or "",
+                email,
+                country,
+                lead.get("qualification") or "",
+                int(lead.get("score") or 0),
+                lead.get("signal") or "",
+                lead.get("notes") or "",
+                LeadState.DISCOVERED.value,
+            ),
+        )
+        inserted = cursor.fetchone()
+        if inserted is None:
+            counts["duplicate"] += 1
+            continue
+
+        lead_id = int(inserted[0])
+        # transition() writes a state_events audit entry and commits this lead.
+        transition(
+            conn,
+            lead_id,
+            LeadState.QUALIFIED,
+            reason=(
+                "GitHub bounded discovery worker "
+                f"(score={int(lead.get('score') or 0)}, "
+                f"qualification={lead.get('qualification') or 'unknown'})"
+            ),
+        )
+        counts["persisted"] += 1
+    return counts
+
+
+def discover_candidates(
+    city: str,
+    country: str,
+    query: str,
+    max_places: int = 5,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Fetch and qualify up to five candidates using read-only database queries."""
     if not settings.google_api_key:
         raise RuntimeError("GOOGLE_API_KEY is not configured")
     if not city.strip() or len(city) > 100:
@@ -50,30 +144,30 @@ def preview(city: str, country: str, query: str, max_places: int = 5) -> dict:
         raise ValueError("Query must be between 1 and 120 characters")
     if not 1 <= max_places <= 5:
         raise ValueError("max_places must be between 1 and 5")
+
     market = get_market(country)
     location = f"{city.strip()}, {market.country}"
     hidden_output = StringIO()
 
-    # Suppress the imported discovery helper's stdout to prevent personal
-    # contact details from appearing in Actions logs for this public repository.
     with redirect_stdout(hidden_output):
         places = discovery.places_text_search(
             api_key=settings.google_api_key,
             query=query.strip(),
             city=location,
             pages=1,
-        )
-        places = places[:max_places]
+        )[:max_places]
         seen_ids: set[str] = set()
         seen_emails: set[str] = set()
-        candidates = []
+        candidates: list[dict[str, Any]] = []
 
         with connect() as conn:
-            # This transaction must remain read-only. No init_db() call is made.
+            # Start the transaction read-only: this connection only checks
+            # duplicate/suppression state while public websites are inspected.
             conn.execute("SET TRANSACTION READ ONLY")
+            _verify_required_tables(conn)
             known_ids = discovery.existing_place_ids(conn)
             known_emails = discovery.existing_emails(conn)
-            # Override the standard crawler with the bounded, 3-page version.
+
             with patch.object(discovery, "find_public_email", _bounded_find_public_email):
                 for place in places:
                     place_id = place.get("place_id")
@@ -103,41 +197,48 @@ def preview(city: str, country: str, query: str, max_places: int = 5) -> dict:
             -int(item.get("score", 0)),
         )
     )
-    selected = candidates[:5]
-    return {
-        "country": market.country,
-        "places_inspected": len(places),
-        "eligible_candidates": len(selected),
-        "priority_a": sum(item.get("priority") == "A" for item in selected),
-        "priority_b": sum(item.get("priority") == "B" for item in selected),
-        "priority_c": sum(item.get("priority") == "C" for item in selected),
-    }
+    return market.country, candidates[:5]
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Read-only, bounded lead discovery preview")
+    parser = argparse.ArgumentParser(
+        description="Manually discover and persist up to five qualified leads; never sends email."
+    )
     parser.add_argument("--city", required=True)
     parser.add_argument("--country", default="India")
     parser.add_argument("--query", required=True)
     parser.add_argument("--max-places", type=int, default=5)
     args = parser.parse_args()
+
     try:
-        result = preview(args.city, args.country, args.query, args.max_places)
+        country, candidates = discover_candidates(
+            args.city, args.country, args.query, args.max_places
+        )
+        if not candidates:
+            print("REVENUE ENGINE — PERSIST DISCOVERY")
+            print("Eligible candidates: 0. No database writes were needed.")
+            return
+
+        with connect() as conn:
+            # A separate short write transaction; this must use a restricted
+            # worker role, not the production owner credential.
+            conn.execute("SET TRANSACTION READ WRITE")
+            _verify_required_tables(conn)
+            result = persist_candidates(conn, candidates, country)
+
     except Exception as exc:
-        # Never print exception text; it may expose connection/provider details.
-        print(f"Discovery preview failed: {type(exc).__name__}")
+        # Do not print driver/network exceptions: they can contain sensitive details.
+        print(f"Discovery persistence failed: {type(exc).__name__}")
         raise SystemExit(1) from None
 
-    print("REVENUE ENGINE — GITHUB DISCOVERY DRY RUN")
-    print("Mode: read-only. No leads saved. No email sent.")
-    print(f"Country: {result['country']}")
-    print(f"Places inspected (maximum 5): {result['places_inspected']}")
-    print(f"Eligible candidates: {result['eligible_candidates']}")
-    print(
-        f"Priority buckets: A={result['priority_a']}, "
-        f"B={result['priority_b']}, C={result['priority_c']}"
-    )
-    print("No database rows or schema were changed.")
+    print("REVENUE ENGINE — GITHUB PERSIST DISCOVERY")
+    print("Mode: persisted leads only. No outreach records or emails were created.")
+    print(f"Country: {country}")
+    print(f"Qualified candidates inspected: {len(candidates)} (maximum 5)")
+    print(f"New qualified leads saved: {result['persisted']}")
+    print(f"Duplicates skipped: {result['duplicate']}")
+    print(f"Suppressed emails skipped: {result['suppressed']}")
+    print(f"Invalid candidates skipped: {result['invalid']}")
 
 
 if __name__ == "__main__":
