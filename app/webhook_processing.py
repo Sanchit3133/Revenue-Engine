@@ -10,6 +10,7 @@ from typing import Any
 
 from app.models import LeadState
 from app.pipeline import TERMINAL_STATES, transition
+from app.followup_scheduler import cancel_follow_ups
 
 
 def _canonical_hash(value: dict[str, Any]) -> str:
