@@ -147,6 +147,23 @@ def send_prepared(
     if claim.rowcount != 1:
         return DeliveryResult(outreach_id, False, False, "outreach_claim_lost", provider=selected_provider)
 
+    # One last persisted check after claiming and immediately before provider I/O.
+    # In particular, a reply/STOP may have arrived while this row was prepared.
+    lead = conn.execute("SELECT state FROM leads WHERE id = ?", (row["lead_id"],)).fetchone()
+    suppressed = conn.execute(
+        "SELECT 1 FROM suppressions WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1",
+        (row["email"],),
+    ).fetchone()
+    if lead is None or suppressed or str(lead["state"]) not in allowed_states:
+        if lead is None:
+            block_reason = "blocked_after_claim:lead_missing"
+        elif suppressed:
+            block_reason = "blocked_after_claim:recipient_suppressed"
+        else:
+            block_reason = "blocked_after_claim:lead_state_" + str(lead["state"])
+        mark_failed(conn, outreach_id, provider=selected_provider, reason=block_reason)
+        return DeliveryResult(outreach_id, False, False, block_reason, provider=selected_provider)
+
     function = sender_function or resolved_sender_function
     # Explicit parameters are convenient for tests and one-off controlled calls.
     # Otherwise use only the credentials/settings for the selected provider.
