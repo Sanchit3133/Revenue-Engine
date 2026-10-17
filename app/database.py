@@ -105,10 +105,22 @@ CREATE TABLE IF NOT EXISTS follow_up_schedule (
 
 CREATE TABLE IF NOT EXISTS consultation_submissions (
     id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE,
+    lead_id INTEGER,
     business_name TEXT NOT NULL, email TEXT NOT NULL, website TEXT,
     stage TEXT NOT NULL, consent_at TEXT NOT NULL, data_json TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (lead_id) REFERENCES leads(id)
+);
+CREATE TABLE IF NOT EXISTS consultation_handoff_tokens (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    token_hash TEXT NOT NULL UNIQUE,
+    lead_id INTEGER NOT NULL,
+    expires_at TEXT NOT NULL,
+    used_at TEXT,
+    consultation_public_id TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (lead_id) REFERENCES leads(id)
 );
 CREATE TABLE IF NOT EXISTS client_requests (
     id INTEGER PRIMARY KEY AUTOINCREMENT, public_id TEXT NOT NULL UNIQUE,
@@ -186,6 +198,7 @@ _MIGRATION_COLUMNS = {
     },
     "payments": {"provider_order_id": "TEXT"},
     "webhook_events": {"payload_json": "TEXT"},
+    "consultation_submissions": {"lead_id": "INTEGER"},
 }
 
 _MIGRATION_INDEXES = (
@@ -193,6 +206,7 @@ _MIGRATION_INDEXES = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_leads_email_unique_normalized ON leads(LOWER(TRIM(email))) WHERE email IS NOT NULL AND TRIM(email) <> ''",
     "CREATE INDEX IF NOT EXISTS idx_follow_up_due ON follow_up_schedule(status, due_at)",
     "CREATE INDEX IF NOT EXISTS idx_follow_up_lead ON follow_up_schedule(lead_id, attempt_number)",
+    "CREATE INDEX IF NOT EXISTS idx_handoff_lead ON consultation_handoff_tokens(lead_id, expires_at)",
     "CREATE INDEX IF NOT EXISTS idx_leads_country ON leads(country)",
     "CREATE INDEX IF NOT EXISTS idx_email_events_provider_msg ON email_events(provider, provider_message_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_events_idempotency ON email_events(idempotency_key) WHERE idempotency_key IS NOT NULL",
