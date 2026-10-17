@@ -2,12 +2,13 @@ import io
 import random
 import unittest
 import zipfile
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from scripts.overture_source import City, parse_cities_zip
 from scripts.overture_discovery import (
     SEGMENTS, _emails_from_html, _fetch_html, _official_https_site, choose_random_segment,
-    normalize_feature,
+    _weighted_segment_order, discover_and_persist, normalize_feature,
 )
 
 
@@ -174,6 +175,82 @@ class TestOvertureSource(unittest.TestCase):
         self.assertIn(segment, {item[0] for item in SEGMENTS})
         self.assertTrue(query)
         self.assertTrue(keywords)
+
+
+class TestMultiCityDiscovery(unittest.TestCase):
+    def test_tries_another_random_city_and_matches_all_education_segments(self):
+        cities = [
+            City("Khopoli", "IN", 18.79, 73.34, 100000),
+            City("Nagpur", "IN", 21.15, 79.09, 2000000),
+        ]
+        candidate = {
+            "properties": {
+                "id": "academy-001",
+                "names": {"primary": "Bright IELTS Coaching Academy"},
+                "websites": ["https://academy.in/"],
+                "confidence": 0.95,
+                "taxonomy": {"primary": "language training education"},
+                "sources": [{"dataset": "meta", "license": "CDLA-Permissive-2.0"}],
+            }
+        }
+
+        class EmptyCursor:
+            def fetchall(self):
+                return []
+
+        class ReadOnlyFakeConnection:
+            def execute(self, _query, _params=()):
+                return EmptyCursor()
+
+        class StableRandom:
+            def shuffle(self, values):
+                return None
+
+            def choices(self, population, weights=None, k=1):
+                return [population[0]]
+
+        with (
+            patch(
+                "scripts.overture_discovery._eligible_cities",
+                return_value=(cities, "India"),
+            ),
+            patch(
+                "scripts.overture_discovery.download_city_places",
+                side_effect=[[], [candidate]],
+            ) as download,
+            patch(
+                "scripts.overture_discovery.find_official_email",
+                return_value=("admissions@academy.in", "public_email_found"),
+            ) as email_lookup,
+            patch(
+                "scripts.overture_discovery.score_business",
+                return_value=SimpleNamespace(
+                    score=95, qualification="HIGH", reasons=["education training"],
+                ),
+            ),
+        ):
+            result = discover_and_persist(
+                ReadOnlyFakeConnection(),
+                country="India",
+                max_new=1,
+                rng=StableRandom(),
+                persist=False,
+            )
+
+        self.assertEqual(download.call_count, 2)
+        self.assertEqual(email_lookup.call_count, 1)
+        self.assertEqual(result["cities_attempted"], 2)
+        self.assertEqual(result["city"], "Khopoli, Nagpur")
+        self.assertEqual(result["site_checks"], 1)
+        self.assertEqual(result["published_emails_found"], 1)
+        self.assertEqual(result["qualified"], 1)
+        self.assertEqual(result["saved"], 0)
+        self.assertEqual(result["lead_ids"], [])
+
+    def test_weighted_segment_order_contains_each_segment_once(self):
+        ordered = _weighted_segment_order(rng=random.Random(7))
+        self.assertEqual(len(ordered), len(SEGMENTS))
+        self.assertEqual({item[0] for item in ordered}, {item[0] for item in SEGMENTS})
 
 
 if __name__ == "__main__":
