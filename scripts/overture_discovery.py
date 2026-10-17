@@ -294,7 +294,7 @@ def find_official_email(website: str) -> tuple[str, str]:
     return "", "no_public_email_found"
 
 
-def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=None) -> dict:
+def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=None, persist: bool = True) -> dict:
     """Discover and persist up to five qualified leads, returning aggregate counts only."""
     if not 1 <= max_new <= MAX_NEW_LEADS:
         raise ValueError(f"max_new must be between 1 and {MAX_NEW_LEADS}")
@@ -349,6 +349,8 @@ def discover_and_persist(conn, *, country: str = "India", max_new: int = 5, rng=
     ))
     stats["qualified"] = min(len(candidates), max_new)
     saved_ids = []
+    if not persist:
+        return {"city": city.name, "segment": segment, "country": canonical_country, **stats, "lead_ids": []}
     for item in candidates[:max_new]:
         try:
             lead_id = save_lead(conn, item)
