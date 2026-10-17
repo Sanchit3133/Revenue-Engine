@@ -99,6 +99,27 @@ def send_prepared(
         return DeliveryResult(outreach_id, False, dry_run, "outreach_not_prepared", provider=selected_provider)
 
     message = Message(email=row["email"], subject=row["subject"], body=row["body"])
+
+    # Re-check recipient suppression and lead status immediately before the
+    # external request. A reply/opt-out can arrive after message preparation.
+    lead = conn.execute("SELECT state FROM leads WHERE id = ?", (row["lead_id"],)).fetchone()
+    if lead is None:
+        mark_failed(conn, outreach_id, provider=selected_provider, reason="blocked_before_send:lead_missing")
+        return DeliveryResult(outreach_id, False, dry_run, "blocked_before_send:lead_missing", provider=selected_provider)
+    suppressed = conn.execute(
+        "SELECT 1 FROM suppressions WHERE lower(trim(email)) = lower(trim(?)) LIMIT 1",
+        (row["email"],),
+    ).fetchone()
+    attempt = int(row["attempt_number"])
+    allowed_states = {"QUALIFIED"} if attempt == 1 else {"CONTACTED", "DELIVERED"}
+    if suppressed:
+        mark_failed(conn, outreach_id, provider=selected_provider, reason="blocked_before_send:recipient_suppressed")
+        return DeliveryResult(outreach_id, False, dry_run, "blocked_before_send:recipient_suppressed", provider=selected_provider)
+    if str(lead["state"]) not in allowed_states:
+        reason = "blocked_before_send:lead_state_" + str(lead["state"])
+        mark_failed(conn, outreach_id, provider=selected_provider, reason=reason)
+        return DeliveryResult(outreach_id, False, dry_run, reason, provider=selected_provider)
+
     if dry_run:
         return DeliveryResult(
             outreach_id,
