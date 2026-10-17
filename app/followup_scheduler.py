@@ -61,7 +61,7 @@ def cancel_follow_ups(conn: Any, lead_id: int, *, reason: str, commit: bool = Tr
     """Cancel any reminders not already completed for a lead."""
     cursor = conn.execute(
         """UPDATE follow_up_schedule
-           SET status = ?, cancellation_reason = ?, updated_at = CURRENT_TIMESTAMP
+           SET status = ?, cancellation_reason = ?, claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
            WHERE lead_id = ? AND status IN (?, ?, ?)""",
         (CANCELLED, str(reason)[:200], int(lead_id), SCHEDULED, CLAIMED, PREPARED),
     )
