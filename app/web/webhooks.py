@@ -6,6 +6,7 @@ import json
 from flask import Blueprint, current_app, jsonify, request
 
 from app.config import settings
+from app.brevo_inbound import process_brevo_inbound
 from app.database import connect, health_check
 from app.webhook_processing import (
     process_brevo_event,
@@ -40,6 +41,29 @@ def healthz():
         current_app.logger.warning("Revenue Engine database health check failed")
         return jsonify({"status": "error", "service": "revenue-engine", "check": "database_unavailable"}), 503
     return jsonify({"status": "ok", "service": "revenue-engine", "database": backend}), 200
+
+
+@webhooks_bp.post("/webhooks/brevo/inbound")
+def brevo_inbound_webhook():
+    """Authenticate and classify Brevo inbound-parsed replies; never auto-reply."""
+    if not settings.brevo_webhook_token:
+        return jsonify({"error": "brevo_webhook_auth_not_configured"}), 503
+    if not verify_brevo_token(_brevo_received_token(), settings.brevo_webhook_token):
+        return jsonify({"error": "unauthorized"}), 401
+    if not request.is_json:
+        return jsonify({"error": "json_required"}), 415
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"error": "json_object_required"}), 400
+    items = payload.get("items")
+    if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        return jsonify({"error": "items_array_of_objects_required"}), 400
+
+    with connect() as conn:
+        stats = process_brevo_inbound(conn, payload)
+    # Only aggregate counters are returned; message bodies and email addresses
+    # are kept out of webhook responses and logs.
+    return jsonify({"accepted": True, **stats}), 200
 
 
 @webhooks_bp.post("/webhooks/brevo")
