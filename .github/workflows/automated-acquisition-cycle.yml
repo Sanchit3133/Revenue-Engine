@@ -71,7 +71,7 @@ jobs:
         run: python -m compileall -q app scripts tests
 
       - name: Test campaign, suppression, scheduling and source safeguards
-        run: python -m unittest tests.test_followup_scheduler tests.test_overture_discovery tests.test_recipient_uniqueness tests.test_outreach tests.test_campaign_sender tests.test_reply_processor tests.test_webhook_processing -v
+        run: python -m unittest tests.test_followup_scheduler tests.test_overture_discovery tests.test_recipient_uniqueness tests.test_consultation_handoff tests.test_brevo_inbound tests.test_outreach tests.test_campaign_sender tests.test_reply_processor tests.test_webhook_processing -v
 
       - name: Run the bounded live cycle
         env:
