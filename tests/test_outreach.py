@@ -262,6 +262,31 @@ class TestOutreach(unittest.TestCase):
             LeadState.CONTACTED.value,
         )
 
+    def test_mark_sent_schedules_first_follow_up(self):
+        lead_id = self.add_lead()
+        prepared = prepare_first_contact(self.conn, lead_id)
+        self.assertTrue(mark_sent(self.conn, prepared.outreach_id))
+        schedule = self.conn.execute(
+            "SELECT lead_id,source_outreach_id,attempt_number,status FROM follow_up_schedule"
+        ).fetchone()
+        self.assertEqual(schedule["lead_id"], lead_id)
+        self.assertEqual(schedule["source_outreach_id"], prepared.outreach_id)
+        self.assertEqual(schedule["attempt_number"], 2)
+        self.assertEqual(schedule["status"], "SCHEDULED")
+
+    def test_mark_sent_never_regresses_replied_lead_or_schedules_reminder(self):
+        lead_id = self.add_lead()
+        prepared = prepare_first_contact(self.conn, lead_id)
+        self.conn.execute(
+            "UPDATE leads SET state=? WHERE id=?",
+            (LeadState.REPLIED.value, lead_id),
+        )
+        self.conn.commit()
+        self.assertTrue(mark_sent(self.conn, prepared.outreach_id))
+        state = self.conn.execute("SELECT state FROM leads WHERE id=?", (lead_id,)).fetchone()[0]
+        self.assertEqual(state, LeadState.REPLIED.value)
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM follow_up_schedule").fetchone()[0], 0)
+
     def test_failed_outreach_does_not_contact_lead(self):
         lead_id = self.add_lead()
 
