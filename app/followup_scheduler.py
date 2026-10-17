@@ -80,7 +80,7 @@ def claim_due_follow_ups(conn: Any, *, limit: int = 5, now: datetime | None = No
         raise ValueError("limit must be between 1 and 25")
     cutoff = _utc_iso(now)
     rows = conn.execute(
-        """SELECT id, lead_id, source_outreach_id, attempt_number, due_at
+        """SELECT id, lead_id, source_outreach_id, attempt_number, due_at, prepared_outreach_id
            FROM follow_up_schedule
            WHERE status = ? AND due_at <= ?
            ORDER BY due_at ASC, id ASC
@@ -103,7 +103,7 @@ def claim_due_follow_ups(conn: Any, *, limit: int = 5, now: datetime | None = No
 def mark_follow_up_prepared(conn: Any, schedule_id: int, outreach_id: int) -> bool:
     cursor = conn.execute(
         """UPDATE follow_up_schedule
-           SET status = ?, prepared_outreach_id = ?, claimed_at = NULL, updated_at = CURRENT_TIMESTAMP
+           SET status = ?, prepared_outreach_id = ?, updated_at = CURRENT_TIMESTAMP
            WHERE id = ? AND status = ?""",
         (PREPARED, int(outreach_id), int(schedule_id), CLAIMED),
     )
@@ -112,20 +112,52 @@ def mark_follow_up_prepared(conn: Any, schedule_id: int, outreach_id: int) -> bo
 
 
 def release_stale_claims(conn: Any, *, now: datetime | None = None, age_minutes: int = 60) -> int:
-    """Recover claims left by a crashed worker; claiming alone never sends."""
+    """Recover abandoned claims without retrying an ambiguous provider submission."""
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
         current = current.replace(tzinfo=timezone.utc)
     threshold = _utc_iso(current - timedelta(minutes=max(1, int(age_minutes))))
-    cursor = conn.execute(
+    now_text = _utc_iso(current)
+
+    # A CLAIMED row has not yet created a reminder message, so it is safe to
+    # release and prepare it again.
+    unprepared = conn.execute(
         """UPDATE follow_up_schedule
            SET status = ?, due_at = ?, claimed_at = NULL,
                cancellation_reason = 'recovered_stale_claim', updated_at = CURRENT_TIMESTAMP
-           WHERE status = ? AND claimed_at IS NOT NULL AND claimed_at < ?""",
-        (SCHEDULED, _utc_iso(current), CLAIMED, threshold),
+           WHERE status = ? AND claimed_at IS NOT NULL AND claimed_at < ?
+             AND prepared_outreach_id IS NULL""",
+        (SCHEDULED, now_text, CLAIMED, threshold),
+    )
+
+    # PREPARED reminders keep their original outreach row. If it remains
+    # PREPARED, resume that exact row. If it reached SENDING, the provider
+    # outcome may be ambiguous, so never resubmit automatically.
+    prepared = conn.execute(
+        """UPDATE follow_up_schedule AS s
+           SET status = CASE
+                 WHEN o.status = 'PREPARED' THEN ?
+                 WHEN o.status = 'SENT' THEN ?
+                 ELSE ?
+               END,
+               due_at = CASE WHEN o.status = 'PREPARED' THEN ? ELSE s.due_at END,
+               cancellation_reason = CASE
+                 WHEN o.status = 'PREPARED' THEN 'recovered_stale_prepared'
+                 WHEN o.status = 'SENT' THEN 'reconciled_already_sent'
+                 WHEN o.status = 'SENDING' THEN 'ambiguous_provider_state_after_crash'
+                 ELSE 'linked_outreach_not_sendable_after_crash'
+               END,
+               claimed_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           FROM outreach AS o
+           WHERE s.prepared_outreach_id = o.id
+             AND s.status = ?
+             AND s.claimed_at IS NOT NULL
+             AND s.claimed_at < ?""",
+        (SCHEDULED, COMPLETED, FAILED, now_text, PREPARED, threshold),
     )
     conn.commit()
-    return int(cursor.rowcount or 0)
+    return int(unprepared.rowcount or 0) + int(prepared.rowcount or 0)
 
 
 def finish_follow_up(conn: Any, schedule_id: int, *, accepted: bool, reason: str = "") -> bool:
