@@ -10,6 +10,7 @@ from typing import Any
 
 from app.models import LeadState
 from app.pipeline import TERMINAL_STATES, transition
+from app.followup_scheduler import cancel_follow_ups
 
 
 def _canonical_hash(value: dict[str, Any]) -> str:
@@ -38,6 +39,19 @@ def _suppress(conn, email: str, reason: str, source: str) -> None:
            ON CONFLICT(email) DO UPDATE SET reason = excluded.reason, source = excluded.source""",
         (normalized, reason, source),
     )
+
+
+def _cancel_follow_ups_for_email(conn, email: str, reason: str) -> None:
+    """Stop all outstanding reminders for a normalized recipient address."""
+    clean = (email or "").strip().lower()
+    if not clean:
+        return
+    rows = conn.execute(
+        "SELECT id FROM leads WHERE lower(trim(email)) = ?",
+        (clean,),
+    ).fetchall()
+    for row in rows:
+        cancel_follow_ups(conn, int(row["id"]), reason=reason, commit=False)
 
 
 def _move_if_nonterminal(conn, lead_id: int, new_state: LeadState, reason: str) -> None:
@@ -110,14 +124,17 @@ def process_brevo_event(conn, payload: dict[str, Any]) -> dict[str, Any]:
             transition(conn, lead_id, LeadState.DELIVERED, reason="brevo_delivered_event")
     elif event_type in {"hard_bounce", "hard_bounced", "invalid_email"}:
         _suppress(conn, email, event_type, "brevo_webhook")
+        _cancel_follow_ups_for_email(conn, email, f"brevo_{event_type}")
         if lead_id is not None:
             _move_if_nonterminal(conn, lead_id, LeadState.BOUNCED, f"brevo_{event_type}")
     elif event_type in {"spam", "complaint"}:
         _suppress(conn, email, "complaint", "brevo_webhook")
+        _cancel_follow_ups_for_email(conn, email, "brevo_complaint")
         if lead_id is not None:
             _move_if_nonterminal(conn, lead_id, LeadState.COMPLAINT, "brevo_complaint")
     elif event_type in {"unsubscribed", "unsubscribe"}:
         _suppress(conn, email, "unsubscribed", "brevo_webhook")
+        _cancel_follow_ups_for_email(conn, email, "brevo_unsubscribed")
         if lead_id is not None:
             _move_if_nonterminal(conn, lead_id, LeadState.UNSUBSCRIBED, "brevo_unsubscribed")
 

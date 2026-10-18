@@ -1,0 +1,80 @@
+name: Revenue Engine Overture discovery preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type OVERTURE_DISCOVERY_PREVIEW to confirm a read-only preview
+        required: true
+        type: string
+      country:
+        description: Configured target country
+        required: true
+        default: India
+        type: string
+      max_new:
+        description: Maximum candidate leads to qualify in preview (1-5)
+        required: true
+        default: "5"
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: revenue-engine-automated-cycle
+  cancel-in-progress: false
+
+jobs:
+  discovery-preview:
+    if: github.repository == 'Sanchit3133/Revenue-Engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require explicit read-only confirmation
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRMATION" != "OVERTURE_DISCOVERY_PREVIEW" ]; then
+            echo "::error::Confirmation did not match. Nothing was inspected."
+            exit 1
+          fi
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing REVENUE_ENGINE_PRODUCTION_DATABASE_URL Actions secret."
+            exit 1
+          fi
+          echo "Read-only preview confirmed. Database secret value is hidden."
+
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Overture worker dependencies
+        run: python -m pip install --disable-pip-version-check -r requirements-worker.txt
+
+      - name: Compile code and run source safety tests
+        run: |
+          python -m compileall -q app scripts tests
+          python -m unittest tests.test_overture_discovery tests.test_recipient_uniqueness tests.test_followup_scheduler -v
+
+      - name: Inspect a random city and education segment without saving or sending
+        env:
+          ENVIRONMENT: development
+          DATABASE_BACKEND: postgresql
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+          TARGET_MARKET_COUNTRY: ${{ inputs.country }}
+          MARKET_VALIDATION_REQUIRED: "true"
+          EMAIL_PROVIDER: brevo
+        run: |
+          set -euo pipefail
+          case "${{ inputs.max_new }}" in
+            1|2|3|4|5) ;;
+            *) echo "::error::max_new must be a number from 1 to 5."; exit 1 ;;
+          esac
+          python -m scripts.run_automated_cycle --dry-run --country "${{ inputs.country }}" --max-new "${{ inputs.max_new }}"

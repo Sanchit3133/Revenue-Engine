@@ -22,6 +22,7 @@ def transition(
     reason: str = "",
     *,
     allow_terminal_payment_override: bool = False,
+    commit: bool = True,
 ) -> None:
     row = conn.execute("SELECT state FROM leads WHERE id = ?", (lead_id,)).fetchone()
     if row is None:
@@ -40,4 +41,5 @@ def transition(
         "INSERT INTO state_events (lead_id, old_state, new_state, reason) VALUES (?, ?, ?, ?)",
         (lead_id, old_state.value, new_state.value, reason),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
