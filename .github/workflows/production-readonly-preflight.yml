@@ -1,0 +1,148 @@
+name: Revenue Engine read-only production preflight
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type READ_ONLY_PRODUCTION_PREFLIGHT to confirm no data or schema changes
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  inspect-production-db:
+    if: github.repository == 'Sanchit3133/Revenue-Engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Require read-only confirmation and database secret
+        env:
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+        run: |
+          set -euo pipefail
+          if [ "$CONFIRMATION" != "READ_ONLY_PRODUCTION_PREFLIGHT" ]; then
+            echo "::error::Confirmation did not match. No database connection was attempted."
+            exit 1
+          fi
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::Missing REVENUE_ENGINE_PRODUCTION_DATABASE_URL Actions secret."
+            exit 1
+          fi
+          echo "Read-only production preflight confirmed. Secret value will not be shown."
+
+      - name: Install PostgreSQL driver
+        run: python -m pip install --disable-pip-version-check "psycopg[binary]>=3.2,<4"
+
+      - name: Inspect database identity, duplicate groups and migration readiness
+        env:
+          DATABASE_URL: ${{ secrets.REVENUE_ENGINE_PRODUCTION_DATABASE_URL }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          import psycopg
+
+          conn = None
+          try:
+              conn = psycopg.connect(
+                  os.environ["DATABASE_URL"],
+                  connect_timeout=10,
+                  options="-c default_transaction_read_only=on",
+                  application_name="revenue-engine-read-only-production-preflight",
+              )
+              with conn.cursor() as cursor:
+                  cursor.execute("SHOW transaction_read_only")
+                  if str(cursor.fetchone()[0]).lower() != "on":
+                      print("ERROR: Database session is not read-only.")
+                      sys.exit(1)
+
+                  cursor.execute("SELECT current_database(), inet_server_addr()::text")
+                  db_name, server_ip = cursor.fetchone()
+                  print("Read-only database connection: OK")
+                  print("Database name:", db_name)
+                  print("Database server IP:", server_ip or "(not reported)")
+
+                  cursor.execute("""
+                      SELECT table_name
+                      FROM information_schema.tables
+                      WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+                  """)
+                  tables = {row[0] for row in cursor.fetchall()}
+                  required = {
+                      "leads", "outreach", "suppressions", "market_validations",
+                      "consultation_submissions", "schema_migrations",
+                  }
+                  missing = sorted(required - tables)
+                  print(f"Required base tables present: {len(required) - len(missing)}/{len(required)}")
+                  if missing:
+                      print("Missing required tables:", ", ".join(missing))
+                      sys.exit(2)
+
+                  cursor.execute("SELECT COUNT(*) FROM public.leads")
+                  print("Lead rows:", int(cursor.fetchone()[0]))
+
+                  cursor.execute("""
+                      SELECT COUNT(*)
+                      FROM (
+                          SELECT LOWER(TRIM(email))
+                          FROM public.leads
+                          WHERE email IS NOT NULL AND TRIM(email) <> ''
+                          GROUP BY LOWER(TRIM(email))
+                          HAVING COUNT(*) > 1
+                      ) AS duplicate_groups
+                  """)
+                  duplicates = int(cursor.fetchone()[0])
+                  print("Normalized duplicate-email groups:", duplicates)
+
+                  cursor.execute("""
+                      SELECT column_name
+                      FROM information_schema.columns
+                      WHERE table_schema = 'public'
+                        AND table_name = 'consultation_submissions'
+                        AND column_name = 'lead_id'
+                  """)
+                  lead_link_present = cursor.fetchone() is not None
+                  cursor.execute("""
+                      SELECT table_name
+                      FROM information_schema.tables
+                      WHERE table_schema = 'public'
+                        AND table_name IN ('follow_up_schedule', 'consultation_handoff_tokens')
+                  """)
+                  migration_tables = {row[0] for row in cursor.fetchall()}
+                  cursor.execute("""
+                      SELECT EXISTS (
+                          SELECT 1 FROM pg_indexes
+                          WHERE schemaname = 'public'
+                            AND indexname = 'idx_leads_email_unique_normalized'
+                      )
+                  """)
+                  email_index_present = bool(cursor.fetchone()[0])
+                  print("consultation_submissions.lead_id present:", lead_link_present)
+                  print("follow_up_schedule present:", "follow_up_schedule" in migration_tables)
+                  print("consultation_handoff_tokens present:", "consultation_handoff_tokens" in migration_tables)
+                  print("Normalized unique email index present:", email_index_present)
+
+                  cursor.execute("""
+                      SELECT status
+                      FROM public.market_validations
+                      WHERE lower(country) = lower('India')
+                      LIMIT 1
+                  """)
+                  row = cursor.fetchone()
+                  print("India market validation:", row[0] if row else "MISSING")
+
+                  if duplicates:
+                      print("STOP: reconcile duplicate-email groups before applying the unique index.")
+                      sys.exit(3)
+                  print("Read-only preflight complete. No records or schema were changed.")
+          except SystemExit:
+              raise
+          except Exception as exc:
+              print("ERROR: Read-only preflight failed (" + type(exc).__name__ + ").")
+              sys.exit(1)
+          finally:
+              if conn is not None:
+                  conn.close()
+          PY
