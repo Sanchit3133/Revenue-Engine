@@ -38,6 +38,11 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(assistant_bp)
     app.register_blueprint(admin_bp)
 
+    @app.get("/healthz")
+    def healthz():
+        """Minimal process health endpoint; never exposes configuration or database details."""
+        return jsonify({"status": "ok"}), 200
+
     @app.errorhandler(413)
     def request_too_large(_error):
         return jsonify({"error": "request_too_large"}), 413
