@@ -76,7 +76,7 @@ class TestMarketValidationRoutes(unittest.TestCase):
     def test_owner_dashboard_renders_successfully(self):
         response = self.client.get("/owner")
         self.assertEqual(response.status_code, 200)
-        self.assertIn(b"Market strategy", response.data)
+        self.assertIn(b"Market review", response.data)
 
     def test_market_validation_requires_all_checks_and_evidence(self):
         page = self.client.get("/owner")
