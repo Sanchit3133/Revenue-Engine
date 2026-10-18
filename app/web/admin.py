@@ -136,7 +136,7 @@ def owner_dashboard():
             "SELECT id,business_name,email,country,state,score,created_at FROM leads ORDER BY id DESC LIMIT 8"
         ).fetchall()
         market_validations = conn.execute(
-            "SELECT country,status,evidence_notes,validated_at,updated_at FROM market_validations ORDER BY country COLLATE NOCASE"
+            "SELECT country,status,evidence_notes,validated_at,updated_at FROM market_validations ORDER BY lower(country), country"
         ).fetchall()
         outreach = conn.execute(
             "SELECT id,email,subject,status,provider,last_error,created_at FROM outreach ORDER BY id DESC LIMIT 8"
