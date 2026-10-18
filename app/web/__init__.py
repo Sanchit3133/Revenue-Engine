@@ -38,6 +38,7 @@ def create_app(test_config: dict | None = None) -> Flask:
     app.register_blueprint(assistant_bp)
     app.register_blueprint(admin_bp)
 
+
     @app.errorhandler(413)
     def request_too_large(_error):
         return jsonify({"error": "request_too_large"}), 413
