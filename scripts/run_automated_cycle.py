@@ -248,6 +248,31 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
                 conn.execute("SET TRANSACTION READ ONLY")
             else:
                 conn.execute("PRAGMA query_only = ON")
+
+        # Gate the live path BEFORE discovery can persist any leads. A market that
+        # has not been explicitly validated must cause zero acquisition writes.
+        if live and not _market_ready(conn, country):
+            summary = {
+                "mode": "LIVE",
+                "country": country,
+                "cities_attempted": 0,
+                "city_data_failures": 0,
+                "city": "",
+                "segment": "",
+                "places_seen": 0,
+                "site_checks": 0,
+                "published_emails_found": 0,
+                "qualified": 0,
+                "saved": 0,
+                "reminders_claimed": 0,
+                "prepared": 0,
+                "accepted_by_provider": 0,
+                "failed_or_blocked": 0,
+                "live_send_block": "market_validation_not_complete",
+            }
+            _record_worker_run(conn, status="blocked", summary=summary)
+            return summary
+
         discovery = discover_and_persist(conn, country=country, max_new=max_new, persist=live)
         summary = {
             "mode": "LIVE" if live else "PREVIEW",
@@ -268,10 +293,6 @@ def run_cycle(*, country: str = "India", max_new: int = 5, live: bool = False) -
             "live_send_block": "",
         }
         if not live:
-            return summary
-        if not _market_ready(conn, discovery["country"]):
-            summary["live_send_block"] = "market_validation_not_complete"
-            _record_worker_run(conn, status="blocked", summary=summary)
             return summary
 
         run_limit = min(int(settings.campaign_limit), int(settings.daily_limit))
