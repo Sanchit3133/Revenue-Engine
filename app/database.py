@@ -198,7 +198,7 @@ _MIGRATION_COLUMNS = {
     },
     "payments": {"provider_order_id": "TEXT"},
     "webhook_events": {"payload_json": "TEXT"},
-    "consultation_submissions": {"lead_id": "INTEGER"},
+    "consultation_submissions": {"lead_id": "INTEGER REFERENCES leads(id)"},
 }
 
 _MIGRATION_INDEXES = (
@@ -425,6 +425,49 @@ def _ensure_column(conn: Any, backend: str, table: str, column: str, definition:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _ensure_consultation_lead_foreign_key(conn: Any, backend: str) -> None:
+    """Keep an existing PostgreSQL consultation lead_id column relationally constrained."""
+    if backend != "postgresql":
+        # SQLite creates the same foreign key for new tables through SCHEMA. SQLite
+        # cannot add a foreign key to an existing table without rebuilding it.
+        return
+
+    constraint = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'consultation_submissions_lead_id_fkey'
+              AND conrelid = 'public.consultation_submissions'::regclass
+              AND contype = 'f'
+        )
+        """
+    ).fetchone()
+    if constraint and bool(constraint[0]):
+        return
+
+    orphan_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM public.consultation_submissions AS c
+        LEFT JOIN public.leads AS l ON l.id = c.lead_id
+        WHERE c.lead_id IS NOT NULL AND l.id IS NULL
+        """
+    ).fetchone()
+    if orphan_count and int(orphan_count[0]) > 0:
+        raise DatabaseConfigurationError(
+            "Cannot add consultation lead foreign key: existing submissions reference missing leads"
+        )
+
+    conn.execute(
+        """
+        ALTER TABLE public.consultation_submissions
+        ADD CONSTRAINT consultation_submissions_lead_id_fkey
+        FOREIGN KEY (lead_id) REFERENCES public.leads(id)
+        """
+    )
+
+
 def init_db() -> None:
     """Apply additive schema changes in development; production uses Replit Publish."""
     backend = get_database_backend()
@@ -453,6 +496,12 @@ def init_db() -> None:
         for table, columns in _MIGRATION_COLUMNS.items():
             for column, definition in columns.items():
                 _ensure_column(conn, backend, table, column, definition)
+
+        # Production schema migration adds this foreign key. Ensure an existing
+        # Development PostgreSQL table also has it, so Replit's schema diff does
+        # not propose dropping the production constraint during Publish.
+        _ensure_consultation_lead_foreign_key(conn, backend)
+
         for statement in _MIGRATION_INDEXES:
             conn.execute(statement)
 
