@@ -31,12 +31,14 @@ def create_app(test_config: dict | None = None) -> Flask:
     from app.web.client_requests import client_requests_bp
     from app.web.assistant import assistant_bp
     from app.web.admin import admin_bp
+    from app.web.payments import payments_bp
 
     app.register_blueprint(web_bp)
     app.register_blueprint(webhooks_bp)
     app.register_blueprint(client_requests_bp)
     app.register_blueprint(assistant_bp)
     app.register_blueprint(admin_bp)
+    app.register_blueprint(payments_bp)
 
 
     @app.errorhandler(413)
