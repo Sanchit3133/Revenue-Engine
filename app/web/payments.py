@@ -112,7 +112,12 @@ def quote_checkout(token: str):
             conn.commit()
         state = "EXPIRED"
 
-    display_state = "paid" if state == "PAID" else "checkout" if state in _CHECKOUT_STATUSES else "unavailable"
+    display_state = (
+        "paid" if state == "PAID"
+        else "pending" if state == "PAYMENT_PENDING"
+        else "checkout" if state in _CHECKOUT_STATUSES
+        else "unavailable"
+    )
     amount_display = f"{Decimal(int(order['amount'])) / Decimal(100):,.2f}"
     return render_template(
         "payment_checkout.html",
@@ -184,12 +189,15 @@ def create_checkout_order(token: str):
         return jsonify({"error": "order_creation_outcome_uncertain_check_provider_dashboard_before_retry"}), 503
 
     if response.status_code not in {200, 201}:
+        uncertain = response.status_code >= 500
         _mark_order_error(
             int(order["id"]),
-            "ORDER_CREATE_FAILED",
+            "ORDER_CREATE_UNCERTAIN" if uncertain else "ORDER_CREATE_FAILED",
             f"Razorpay order creation returned HTTP {response.status_code}; no automatic retry was made.",
         )
-        return jsonify({"error": "razorpay_order_creation_failed_check_server_status"}), 502
+        code = 503 if uncertain else 502
+        reason = "order_creation_outcome_uncertain_check_provider_dashboard_before_retry" if uncertain else "razorpay_order_creation_failed_check_server_status"
+        return jsonify({"error": reason}), code
     try:
         provider_order = response.json()
     except (ValueError, AttributeError):
@@ -268,6 +276,17 @@ def verify_checkout_payment(token: str):
     if not hmac.compare_digest(expected, signature):
         return jsonify({"error": "invalid_checkout_signature"}), 401
 
+    # Once Checkout has returned a valid signature, freeze the public retry button
+    # while the server checks provider capture. A timeout must not invite a second pay.
+    if str(order.get("status")) == "ORDER_CREATED":
+        with connect() as conn:
+            conn.execute(
+                """UPDATE client_orders SET status='PAYMENT_PENDING',updated_at=CURRENT_TIMESTAMP
+                   WHERE id=? AND status='ORDER_CREATED'""",
+                (order["id"],),
+            )
+            conn.commit()
+
     try:
         response = requests.get(
             f"{RAZORPAY_PAYMENTS_URL}/{payment_id}",
@@ -283,10 +302,14 @@ def verify_checkout_payment(token: str):
     except (ValueError, AttributeError):
         return jsonify({"status": "pending", "message": "Payment is awaiting provider confirmation."}), 202
 
+    try:
+        provider_amount = int(provider_payment.get("amount") or 0)
+    except (TypeError, ValueError):
+        provider_amount = 0
     if (
         str(provider_payment.get("id") or "") != payment_id
         or str(provider_payment.get("order_id") or "") != provider_order_id
-        or int(provider_payment.get("amount") or 0) != int(order["amount"])
+        or provider_amount != int(order["amount"])
         or str(provider_payment.get("currency") or "").upper() != str(order["currency"]).upper()
     ):
         _mark_order_error(int(order["id"]), "PAYMENT_MISMATCH", "Razorpay payment record did not match the approved quote.")
