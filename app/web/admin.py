@@ -221,6 +221,9 @@ def create_or_resend_payment_link(request_id: int):
     except ValueError as exc:
         flash(str(exc), "error")
         return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    if request.form.get("csrf_scope_confirmation") != "yes":
+        flash("Confirm that the customer agreed to this scope and amount before creating a payment order.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
     if len(scope_note) < 8:
         flash("Record the agreed written scope or agreement reference before requesting payment.", "error")
         return redirect(url_for("admin.owner_dashboard") + "#client-requests")
@@ -280,6 +283,26 @@ def create_or_resend_payment_link(request_id: int):
             token = checkout_token(secret=str(signing_secret), request_public_id=str(row["public_id"]), order_id=order_id, expires_at=expiry_text)
             payment_row_id = int(existing["id"])
             resend_existing = True
+        elif existing and str(existing["status"]).lower() == "order_failed":
+            # Provider explicitly rejected the earlier order request, so it is safe
+            # to retry the same local payment row with the newly owner-approved quote.
+            payment_row_id = int(existing["id"])
+            conn.execute(
+                """UPDATE payments SET amount=?,currency=?,status='order_creating',
+                   provider_order_id=NULL,checkout_token_hash=NULL,checkout_expires_at=NULL,
+                   provider_payment_id=NULL WHERE id=? AND status='order_failed'""",
+                (amount_minor, currency, payment_row_id),
+            )
+            conn.execute(
+                "UPDATE client_requests SET scope_confirmed=1,approval_note=?,status='PAYMENT_ORDER_CREATING',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (scope_note, request_id),
+            )
+            _audit(conn, "payment_order_creation_retried_after_definite_failure", str(row["public_id"]), f"currency={currency};amount_minor={amount_minor}")
+            conn.commit()
+            resend_existing = False
+            token = ""
+            order_id = ""
+            expiry_text = ""
         elif existing:
             flash(f"A Razorpay order already exists for this request with status {existing['status']}. Review/reconcile it before creating another.", "warning")
             return redirect(url_for("admin.owner_dashboard") + "#client-requests")
