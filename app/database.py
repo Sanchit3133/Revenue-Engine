@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS payments (
     provider_payment_id TEXT UNIQUE, amount INTEGER,
     currency TEXT DEFAULT 'INR', status TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, provider_order_id TEXT,
+    client_request_public_id TEXT, checkout_token_hash TEXT, checkout_expires_at TEXT,
     FOREIGN KEY (lead_id) REFERENCES leads(id)
 );
 CREATE TABLE IF NOT EXISTS market_validations (
@@ -196,7 +197,12 @@ _MIGRATION_COLUMNS = {
         "provider_message_id": "TEXT",
         "idempotency_key": "TEXT",
     },
-    "payments": {"provider_order_id": "TEXT"},
+    "payments": {
+        "provider_order_id": "TEXT",
+        "client_request_public_id": "TEXT",
+        "checkout_token_hash": "TEXT",
+        "checkout_expires_at": "TEXT",
+    },
     "webhook_events": {"payload_json": "TEXT"},
     "consultation_submissions": {"lead_id": "INTEGER REFERENCES leads(id)"},
 }
@@ -211,6 +217,8 @@ _MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_email_events_provider_msg ON email_events(provider, provider_message_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_events_idempotency ON email_events(idempotency_key) WHERE idempotency_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(provider, provider_order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_payments_client_request ON payments(client_request_public_id, id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_checkout_token ON payments(checkout_token_hash) WHERE checkout_token_hash IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_consultations_email ON consultation_submissions(email)",
     "CREATE INDEX IF NOT EXISTS idx_consultations_updated ON consultation_submissions(updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_outreach_events_outreach ON outreach_events(outreach_id)",
