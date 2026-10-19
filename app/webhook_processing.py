@@ -242,6 +242,122 @@ def process_razorpay_event(conn, payload: dict[str, Any], *, lead_id_override: i
     if amount_int <= 0:
         conn.commit()
         return {"accepted": False, "reason": "payment_amount_invalid"}
+
+    # Customer quotes use a strict order-to-request mapping. A valid signature
+    # alone is not enough: amount, currency and the exact local order must match.
+    client_order = None
+    if order_id:
+        client_order = conn.execute(
+            """SELECT id,client_request_id,amount,currency,status,razorpay_payment_id
+               FROM client_orders WHERE razorpay_order_id=? LIMIT 1""",
+            (order_id,),
+        ).fetchone()
+    if client_order is not None:
+        expected_amount = int(client_order["amount"])
+        expected_currency = str(client_order["currency"] or "").upper()
+        if amount_int != expected_amount or currency != expected_currency:
+            conn.execute(
+                """UPDATE client_orders SET status='PAYMENT_MISMATCH',error_note=?,
+                   updated_at=CURRENT_TIMESTAMP WHERE id=? AND status <> 'PAID'""",
+                ("Captured payment amount/currency did not match the approved quote.", client_order["id"]),
+            )
+            conn.commit()
+            return {
+                "accepted": True,
+                "reconciliation_required": True,
+                "reason": "client_order_amount_currency_mismatch",
+            }
+
+        if str(client_order["status"]) == "PAID":
+            if str(client_order["razorpay_payment_id"] or "") == payment_id:
+                conn.execute(
+                    "UPDATE webhook_events SET processed_at=? WHERE provider='razorpay' AND idempotency_key=?",
+                    (datetime.now(timezone.utc).isoformat(), key),
+                )
+                conn.commit()
+                return {"accepted": True, "duplicate": True, "reason": "client_order_payment_already_recorded"}
+            conn.commit()
+            return {
+                "accepted": True,
+                "reconciliation_required": True,
+                "reason": "client_order_already_paid_with_different_payment",
+            }
+
+        if str(client_order["status"]) != "ORDER_CREATED":
+            conn.commit()
+            return {
+                "accepted": True,
+                "reconciliation_required": True,
+                "reason": "client_order_not_in_payable_state",
+            }
+
+        request_row = conn.execute(
+            "SELECT id FROM client_requests WHERE id=?",
+            (client_order["client_request_id"],),
+        ).fetchone()
+        if request_row is None:
+            conn.commit()
+            return {"accepted": True, "reconciliation_required": True, "reason": "client_request_mapping_missing"}
+
+        payment_by_id = conn.execute(
+            """SELECT id,provider_order_id,amount,currency,status
+               FROM payments WHERE provider_payment_id=? LIMIT 1""",
+            (payment_id,),
+        ).fetchone()
+        if payment_by_id is not None and str(payment_by_id["provider_order_id"] or "") != order_id:
+            conn.commit()
+            return {"accepted": True, "reconciliation_required": True, "reason": "payment_id_already_mapped_to_another_order"}
+
+        pending_payment = conn.execute(
+            """SELECT id,provider_payment_id,amount,currency
+               FROM payments WHERE lower(provider)='razorpay' AND provider_order_id=?
+               ORDER BY id DESC LIMIT 1""",
+            (order_id,),
+        ).fetchone()
+        if pending_payment is not None:
+            if (
+                pending_payment["provider_payment_id"] not in (None, payment_id)
+                or pending_payment["amount"] not in (None, expected_amount)
+                or str(pending_payment["currency"] or expected_currency).upper() != expected_currency
+            ):
+                conn.commit()
+                return {"accepted": True, "reconciliation_required": True, "reason": "payment_record_mapping_conflict"}
+            conn.execute(
+                """UPDATE payments SET provider_payment_id=?,amount=?,currency=?,status='captured'
+                   WHERE id=?""",
+                (payment_id, amount_int, currency, pending_payment["id"]),
+            )
+        else:
+            conn.execute(
+                """INSERT INTO payments
+                   (lead_id,provider,provider_payment_id,amount,currency,status,provider_order_id)
+                   VALUES(NULL,'razorpay',?,?,?,'captured',?)""",
+                (payment_id, amount_int, currency, order_id),
+            )
+
+        now = datetime.now(timezone.utc).isoformat()
+        conn.execute(
+            """UPDATE client_orders SET status='PAID',razorpay_payment_id=?,paid_at=?,
+               error_note=NULL,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='ORDER_CREATED'""",
+            (payment_id, now, client_order["id"]),
+        )
+        conn.execute(
+            "UPDATE client_requests SET payment_reference=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+            (payment_id, client_order["client_request_id"]),
+        )
+        conn.execute(
+            "UPDATE webhook_events SET processed_at=? WHERE provider='razorpay' AND idempotency_key=?",
+            (now, key),
+        )
+        conn.commit()
+        return {
+            "accepted": True,
+            "duplicate": False,
+            "reason": "client_order_payment_recorded",
+            "client_request_id": int(client_order["client_request_id"]),
+            "payment_id": payment_id,
+        }
+
     if lead_id is None:
         conn.execute(
             "UPDATE webhook_events SET payload_json = ? WHERE provider = 'razorpay' AND idempotency_key = ?",
