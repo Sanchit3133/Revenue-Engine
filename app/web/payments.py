@@ -98,6 +98,8 @@ def quote_checkout(token: str):
             csrf_token=_csrf_token(),
             key_id=None,
             error="This payment link is invalid or no longer available. Contact Revenue Engine using your request reference.",
+            token=token,
+            checkout_configured=False,
         ), 404
 
     state = str(order.get("status") or "")
@@ -120,6 +122,8 @@ def quote_checkout(token: str):
         csrf_token=_csrf_token(),
         key_id=getattr(settings, "razorpay_key_id", None) if display_state == "checkout" else None,
         error=None,
+        token=token,
+        checkout_configured=_payment_configuration_error() is None,
     ), 200
 
 
