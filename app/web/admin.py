@@ -160,7 +160,7 @@ def owner_dashboard():
         ).fetchall()
         requests_rows = conn.execute(
             """SELECT cr.id,cr.public_id,cr.business_name,cr.email,cr.request_type,cr.status,
-                      cr.draft_source,cr.draft_error,cr.scope_confirmed,cr.payment_reference,cr.created_at,
+                      cr.draft_source,cr.draft_error,cr.scope_confirmed,cr.payment_reference,cr.approval_note,cr.created_at,
                       p.amount AS payment_amount,p.currency AS payment_currency,
                       p.status AS payment_status,p.provider_order_id
                FROM client_requests cr
