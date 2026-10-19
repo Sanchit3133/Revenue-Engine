@@ -359,51 +359,55 @@ def create_or_resend_payment_link(request_id: int):
     return redirect(url_for("admin.owner_dashboard") + "#client-requests")
 
 
-def _verified_captured_payment(conn, payment_reference: str, customer_email: str) -> bool:
-    """Require a known captured payment ID and reject known payer mismatches.
-
-    A payment may be in the payments table, or may be a captured, signed Razorpay
-    event retained in webhook_events while awaiting explicit reconciliation. If
-    the webhook provides payer email, it must match the customer's request email.
-    """
+def _verified_captured_payment(
+    conn, payment_reference: str, customer_email: str, request_public_id: str
+) -> bool:
+    """Require a captured payment explicitly mapped to this exact client request."""
     reference = (payment_reference or "").strip()
     expected_email = (customer_email or "").strip().lower()
-    if not reference or not expected_email:
+    expected_request = (request_public_id or "").strip()
+    if not reference or not expected_email or not expected_request:
         return False
     row = conn.execute(
-        """SELECT 1 FROM payments
+        """SELECT client_request_public_id,status,amount,currency
+           FROM payments
            WHERE lower(provider)='razorpay' AND provider_payment_id=?
-             AND lower(COALESCE(status,'')) IN ('captured','paid','success')
            LIMIT 1""",
         (reference,),
     ).fetchone()
-    payment_known = row is not None
-    events = conn.execute(
+    if row is None:
+        return False
+    if row["client_request_public_id"] != expected_request:
+        return False
+    if str(row["status"] or "").lower() not in {"captured", "paid", "success"}:
+        return False
+    event_rows = conn.execute(
         """SELECT payload_json FROM webhook_events
            WHERE provider='razorpay' AND event_type='payment.captured' AND resource_id=?
            ORDER BY id DESC LIMIT 10""",
         (reference,),
     ).fetchall()
-    for event in events:
+    for event in event_rows:
         try:
             payload = json.loads(event["payload_json"] or "{}")
             payment = payload.get("payload", {}).get("payment", {}).get("entity", {})
-            captured = (
-                payload.get("event") == "payment.captured"
-                and payment.get("id") == reference
-                and str(payment.get("status", "")).lower() == "captured"
-                and payment.get("captured") is not False
-                and int(payment.get("amount") or 0) > 0
-            )
-            if not captured:
+            if payment.get("id") != reference:
                 continue
-            payment_known = True
             payer_email = str(payment.get("email") or "").strip().lower()
             if payer_email and payer_email != expected_email:
                 return False
+            if int(payment.get("amount") or 0) != int(row["amount"] or 0):
+                return False
+            if str(payment.get("currency") or "").upper() != str(row["currency"] or "").upper():
+                return False
+            return (
+                payload.get("event") == "payment.captured"
+                and str(payment.get("status", "")).lower() == "captured"
+                and payment.get("captured") is not False
+            )
         except (ValueError, TypeError, AttributeError):
             continue
-    return payment_known
+    return False
 
 
 @admin_bp.post("/owner/requests/<int:request_id>")
@@ -441,18 +445,18 @@ def update_client_request(request_id: int):
             if not (row["payment_reference"] or "").strip():
                 flash("Approval blocked: enter the verified captured Razorpay payment ID first.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
-            if not _verified_captured_payment(conn, row["payment_reference"], row["email"]):
+            if not _verified_captured_payment(conn, row["payment_reference"], row["email"], row["public_id"]):
                 flash("Approval blocked: that reference does not match a captured Razorpay payment record or a signed captured-payment event in this database. Verify/reconcile the payment before retrying.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
             if not row["draft_content"] or not row["draft_filename"]:
                 flash("This request has no generated file to deliver. Review the request manually.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
-            if row["status"] not in {"PENDING_REVIEW", "APPROVED", "DELIVERY_FAILED"}:
-                flash(f"Delivery blocked because request status is {row['status']}.", "error")
+            if row["status"] != "PAID":
+                flash(f"Delivery blocked because this request is not in PAID state (current status: {row['status']}). Wait for the signed Razorpay captured-payment webhook.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
             # Atomically claim delivery before any provider call so double-clicks cannot send twice.
             changed = conn.execute(
-                "UPDATE client_requests SET status='SENDING',approved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status IN ('PENDING_REVIEW','APPROVED','DELIVERY_FAILED')",
+                "UPDATE client_requests SET status='SENDING',approved_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='PAID'",
                 (request_id,),
             ).rowcount
             if changed != 1:
