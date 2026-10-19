@@ -1,10 +1,12 @@
 """Authenticated owner dashboard and explicit delivery approval workflow."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 import json
 from functools import wraps
 import io
+import hashlib
 import secrets
 import subprocess
 import sys
@@ -15,7 +17,7 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, s
 
 from app.config import settings
 from app.database import connect
-from app.notifications import deliver_approved_file
+from app.notifications import deliver_approved_file, send_brevo_email
 from app.models import LeadState
 from app.outreach import prepare_first_contact
 from app.reply_processor import process_reply
@@ -238,6 +240,144 @@ def _verified_captured_payment(conn, payment_reference: str, customer_email: str
         except (ValueError, TypeError, AttributeError):
             continue
     return payment_known
+
+
+
+@admin_bp.post("/owner/requests/<int:request_id>/quote")
+@_owner_required
+def create_request_quote(request_id: int):
+    """Create and deliberately email an owner-priced, expiring customer quote."""
+    if not _csrf_valid(request.form.get("csrf_token", "")):
+        abort(400, description="Invalid CSRF token")
+
+    raw_amount = (request.form.get("quote_amount") or "").strip().replace(",", "")
+    scope_summary = (request.form.get("quote_scope") or "").strip()[:2500]
+    note = (request.form.get("quote_note") or "").strip()[:1000]
+    if request.form.get("confirm_scope") != "yes":
+        flash("Quote blocked: confirm that the written scope and agreement are on record.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    if not scope_summary or len(scope_summary) < 12:
+        flash("Add a clear scope summary before sending a quote.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    try:
+        rupees = Decimal(raw_amount)
+        if not rupees.is_finite() or rupees <= 0 or rupees > Decimal("10000000") or rupees.as_tuple().exponent < -2:
+            raise InvalidOperation
+        amount_minor = int(rupees * 100)
+    except (InvalidOperation, ValueError):
+        flash("Enter a valid INR quote amount with at most two decimal places.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+    app_url = (getattr(settings, "public_app_url", None) or "").strip().rstrip("/")
+    if not app_url.startswith("https://"):
+        flash("Quote blocked: set PUBLIC_APP_URL to the published HTTPS URL.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    if not (getattr(settings, "brevo_api_key", None) and getattr(settings, "brevo_sender", None)):
+        flash("Quote blocked: configure the Brevo API key and sender in the published app secrets first.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+    with connect() as conn:
+        row = conn.execute("SELECT * FROM client_requests WHERE id=?", (request_id,)).fetchone()
+        if row is None:
+            abort(404)
+        if row["request_type"] != "delivery":
+            flash("Quotes can only be created for a delivery request.", "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+        if not row["draft_filename"] or not row["draft_content"]:
+            flash("Quote blocked: generate and review a private draft first.", "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+        if row["status"] in {"DELIVERED", "SENDING", "DELIVERY_UNCERTAIN", "REJECTED"}:
+            flash(f"Quote blocked because the request is {row['status']}.", "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+        prior = conn.execute(
+            "SELECT id,status FROM client_orders WHERE client_request_id=? ORDER BY id DESC LIMIT 1",
+            (request_id,),
+        ).fetchone()
+        if prior and prior["status"] not in {"QUOTE_EMAIL_FAILED", "ORDER_CREATE_FAILED", "EXPIRED"}:
+            flash(
+                "An existing quote/payment attempt is active or needs reconciliation. Check its status before creating another.",
+                "warning",
+            )
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+        if prior:
+            conn.execute(
+                "UPDATE client_orders SET status='EXPIRED',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (prior["id"],),
+            )
+
+        raw_token = secrets.token_urlsafe(32)
+        token_hash = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+        public_id = secrets.token_hex(12)
+        expiry = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        conn.execute(
+            """INSERT INTO client_orders
+               (public_id,client_request_id,token_hash,amount,currency,scope_summary,status,expires_at)
+               VALUES(?,?,?,?,?,'', 'QUOTE_PREPARED', ?)""".replace("VALUES(?,?,?,?,?,'', 'QUOTE_PREPARED', ?)", "VALUES(?,?,?,?,?,?,'QUOTE_PREPARED', ?)"),
+            (public_id, request_id, token_hash, amount_minor, "INR", scope_summary, expiry),
+        )
+        order_row = conn.execute(
+            "SELECT id FROM client_orders WHERE public_id=?", (public_id,)
+        ).fetchone()
+        conn.execute(
+            """UPDATE client_orders SET scope_summary=? WHERE public_id=?""",
+            (scope_summary, public_id),
+        )
+        conn.execute(
+            """UPDATE client_requests SET scope_confirmed=1,approval_note=?,updated_at=CURRENT_TIMESTAMP
+               WHERE id=?""",
+            (note or "Written scope confirmed before quote.", request_id),
+        )
+        _audit(conn, "quote_prepared", public_id, f"request_id={request_id};amount_minor={amount_minor};currency=INR")
+        conn.commit()
+        business_name = row["business_name"]
+        email = row["email"]
+        request_ref = row["public_id"]
+
+    payment_url = f"{app_url}/pay/{raw_token}"
+    subject = f"Your Revenue Engine quote [{request_ref}]"
+    body = (
+        f"Hello {business_name},\n\n"
+        "Here is the quote for the scope discussed with Revenue Engine.\n\n"
+        f"Request reference: {request_ref}\n"
+        f"Quote reference: {public_id}\n"
+        f"Amount due: INR {rupees:,.2f}\n"
+        f"Scope: {scope_summary}\n"
+        "Payment link (valid for 7 days):\n"
+        f"{payment_url}\n\n"
+        "The payment page will show the approved amount before checkout. A draft or deliverable is not released automatically after payment; Revenue Engine will verify capture and complete owner review first. "
+        "This quote covers the scope listed above. Any hosting, domain, integrations, or full production deployment are included only if explicitly listed in that scope.\n\n"
+        "If anything looks incorrect, please reply before paying.\nRevenue Engine"
+    )
+    try:
+        sent = send_brevo_email(to_email=email, subject=subject, body=body)
+    except Exception as exc:
+        sent = {"success": False, "uncertain": True, "reason": f"provider_error:{type(exc).__name__}"}
+
+    if sent.get("success"):
+        status = "QUOTED"
+        message = "Quote email was accepted by Brevo. Payment will not be marked captured until Razorpay confirms it."
+    elif sent.get("uncertain"):
+        status = "QUOTE_EMAIL_UNCERTAIN"
+        message = "Quote email outcome is uncertain. Check Brevo activity before sending another quote."
+    else:
+        status = "QUOTE_EMAIL_FAILED"
+        message = "Quote email was not accepted. Check configuration and provider activity before retrying."
+    with connect() as conn:
+        conn.execute(
+            """UPDATE client_orders SET status=?,quote_sent_at=?,error_note=?,updated_at=CURRENT_TIMESTAMP
+               WHERE public_id=?""",
+            (
+                status,
+                datetime.now(timezone.utc).isoformat() if sent.get("success") else None,
+                None if sent.get("success") else str(sent.get("reason") or status)[:500],
+                public_id,
+            ),
+        )
+        _audit(conn, "quote_email_result", public_id, f"status={status};provider_message_id={sent.get('message_id') or 'none'}")
+        conn.commit()
+    flash(message, "success" if sent.get("success") else "warning" if sent.get("uncertain") else "error")
+    return redirect(url_for("admin.owner_dashboard") + "#client-requests")
 
 
 @admin_bp.post("/owner/requests/<int:request_id>")
