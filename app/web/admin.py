@@ -339,7 +339,7 @@ def create_or_resend_payment_link(request_id: int):
             request_status = "PAYMENT_ORDER_UNCERTAIN" if result.get("uncertain") else "PAYMENT_LINK_FAILED"
             with connect() as conn:
                 conn.execute("UPDATE payments SET status=? WHERE id=? AND status='order_creating'", (payment_status, payment_row_id))
-                conn.execute("UPDATE client_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (request_status, request_id))
+                conn.execute("UPDATE client_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status NOT IN ('PAID','REJECTED','DELIVERED','SENDING')", (request_status, request_id))
                 _audit(conn, "payment_order_creation_failed", str(row["public_id"]), str(result.get("reason", "failed"))[:500])
                 conn.commit()
             flash("Razorpay order creation did not complete. " + ("The provider response may be ambiguous; inspect Razorpay Test/Live Dashboard activity before retrying." if result.get("uncertain") else "Check API credentials and the reported order error before retrying."), "error")
@@ -542,8 +542,8 @@ def update_client_request(request_id: int):
                 update_conn.commit()
             return redirect(url_for("admin.owner_dashboard") + "#client-requests")
         elif action == "reject":
-            if row["status"] in {"DELIVERED", "SENDING", "DELIVERY_UNCERTAIN"}:
-                flash(f"Cannot reject a request in {row['status']} status.", "error")
+            if row["status"] in {"DELIVERED", "SENDING", "DELIVERY_UNCERTAIN", "PAID", "AWAITING_PAYMENT", "PAYMENT_ORDER_CREATING", "PAYMENT_ORDER_UNCERTAIN", "PAYMENT_LINK_EMAIL_UNCERTAIN"}:
+                flash(f"Cannot reject a request in {row['status']} status. Reconcile payment/link activity first.", "error")
             else:
                 note = (request.form.get("approval_note") or "Rejected during owner review.").strip()[:1000]
                 conn.execute("UPDATE client_requests SET status='REJECTED',approval_note=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (note, request_id))
