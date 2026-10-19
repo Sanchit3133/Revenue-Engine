@@ -199,6 +199,10 @@ def owner_dashboard():
         email_provider=getattr(settings, "email_provider", "unknown"),
         hf_configured=bool(getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None)),
         notification_configured=bool(getattr(settings, "owner_notification_email", None) and getattr(settings, "brevo_api_key", None) and getattr(settings, "brevo_sender", None)),
+        brevo_webhook_configured=bool(getattr(settings, "brevo_webhook_token", None)),
+        razorpay_api_configured=bool(getattr(settings, "razorpay_key_id", None) and getattr(settings, "razorpay_key_secret", None)),
+        razorpay_webhook_configured=bool(getattr(settings, "razorpay_webhook_secret", None)),
+        published_url_configured=str(getattr(settings, "public_app_url", "") or "").startswith("https://"),
         google_configured=bool(getattr(settings, "google_api_key", None)),
     )
 
