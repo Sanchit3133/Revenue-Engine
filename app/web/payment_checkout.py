@@ -62,6 +62,8 @@ def payment_page(token: str):
         return render_template("payment_unavailable.html"), 404
     if str(row["status"]).lower() == "captured" or str(row["request_status"]).upper() == "PAID":
         return render_template("payment_complete.html", already_paid=True), 200
+    if str(row["request_status"]).upper() in {"REJECTED", "DELIVERED", "SENDING", "DELIVERY_UNCERTAIN"}:
+        return render_template("payment_unavailable.html"), 404
     if str(row["status"]).lower() not in {"link_sent", "link_email_failed"}:
         return render_template("payment_unavailable.html"), 404
     key_id = getattr(settings, "razorpay_key_id", None)
