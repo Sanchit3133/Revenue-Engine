@@ -128,7 +128,7 @@ def owner_dashboard():
             "consultations": conn.execute("SELECT COUNT(*) FROM consultation_submissions").fetchone()[0],
             "payments": conn.execute("SELECT COUNT(*) FROM payments").fetchone()[0],
             "captured_payments": conn.execute("SELECT COUNT(*) FROM payments WHERE lower(COALESCE(status,'')) IN ('captured','paid','success')").fetchone()[0],
-            "pending_requests": conn.execute("SELECT COUNT(*) FROM client_requests WHERE status IN ('PENDING_REVIEW','APPROVED','DELIVERY_UNCERTAIN')").fetchone()[0],
+            "pending_requests": conn.execute("SELECT COUNT(*) FROM client_requests WHERE status IN ('PENDING_REVIEW','APPROVED','DELIVERY_UNCERTAIN','PAYMENT_ORDER_CREATING','PAYMENT_ORDER_UNCERTAIN','PAYMENT_LINK_FAILED','PAYMENT_LINK_EMAIL_UNCERTAIN','AWAITING_PAYMENT','PAID')").fetchone()[0],
             "delivered_files": conn.execute("SELECT COUNT(*) FROM client_requests WHERE status='DELIVERED'").fetchone()[0],
             "webhook_events": conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0],
             "suppressed_emails": conn.execute("SELECT COUNT(*) FROM suppressions").fetchone()[0],
@@ -159,7 +159,16 @@ def owner_dashboard():
                FROM consultation_messages ORDER BY id DESC LIMIT 50"""
         ).fetchall()
         requests_rows = conn.execute(
-            "SELECT id,public_id,business_name,email,request_type,status,draft_source,draft_error,scope_confirmed,payment_reference,created_at FROM client_requests ORDER BY id DESC LIMIT 15"
+            """SELECT cr.id,cr.public_id,cr.business_name,cr.email,cr.request_type,cr.status,
+                      cr.draft_source,cr.draft_error,cr.scope_confirmed,cr.payment_reference,cr.created_at,
+                      p.amount AS payment_amount,p.currency AS payment_currency,
+                      p.status AS payment_status,p.provider_order_id
+               FROM client_requests cr
+               LEFT JOIN payments p ON p.id=(
+                   SELECT MAX(p2.id) FROM payments p2
+                   WHERE p2.client_request_public_id=cr.public_id
+               )
+               ORDER BY cr.id DESC LIMIT 15"""
         ).fetchall()
         events = conn.execute(
             "SELECT provider,event_type,resource_id,received_at,processed_at FROM webhook_events ORDER BY id DESC LIMIT 8"
