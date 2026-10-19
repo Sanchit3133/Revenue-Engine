@@ -54,6 +54,8 @@ class Settings:
     sendgrid_sender: str | None
     sendgrid_reply_to: str | None
 
+    razorpay_key_id: str | None
+    razorpay_key_secret: str | None = field(repr=False)
     razorpay_webhook_secret: str | None
     flask_secret_key: str | None
     owner_dashboard_password: str | None
@@ -114,6 +116,8 @@ def load_settings() -> Settings:
         sendgrid_api_key=_optional_env("SENDGRID_API_KEY"),
         sendgrid_sender=_optional_env("SENDGRID_SENDER"),
         sendgrid_reply_to=_optional_env("SENDGRID_REPLY_TO"),
+        razorpay_key_id=_optional_env("RAZORPAY_KEY_ID"),
+        razorpay_key_secret=_optional_env("RAZORPAY_KEY_SECRET"),
         razorpay_webhook_secret=_optional_env("RAZORPAY_WEBHOOK_SECRET"),
         flask_secret_key=_optional_env("FLASK_SECRET_KEY"),
         owner_dashboard_password=_optional_env("OWNER_DASHBOARD_PASSWORD"),

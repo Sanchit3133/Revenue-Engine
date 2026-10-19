@@ -175,12 +175,7 @@ def _lead_id_from_payment(conn, payment: dict[str, Any], order_id: str | None) -
 
 
 def process_razorpay_event(conn, payload: dict[str, Any], *, lead_id_override: int | None = None) -> dict[str, Any]:
-    """Persist and process a Razorpay payment.captured event idempotently.
-
-    Amounts are stored in the provider's smallest currency unit (paise for INR).
-    If the event cannot be linked to a lead, the signed payload is retained for
-    explicit reconciliation instead of marking any lead paid speculatively.
-    """
+    """Persist a captured payment only after matching a signed provider event to its order."""
     if not isinstance(payload, dict):
         return {"accepted": False, "reason": "payload_must_be_object"}
     event_type = str(payload.get("event", "")).strip()
@@ -207,8 +202,16 @@ def process_razorpay_event(conn, payload: dict[str, Any], *, lead_id_override: i
         conn.commit()
         return {"accepted": True, "ignored": True, "reason": "event_not_payment_captured"}
 
-    if not payment_id or str(payment.get("status", "")).lower() != "captured" or payment.get("captured") is False:
+    if not payment_id or not order_id or str(payment.get("status", "")).lower() != "captured" or payment.get("captured") is False:
         return {"accepted": False, "reason": "payment_not_confirmed_captured"}
+
+    try:
+        amount_int = int(payment.get("amount"))
+    except (TypeError, ValueError):
+        amount_int = 0
+    currency = str(payment.get("currency", "")).upper()
+    if amount_int <= 0 or not currency:
+        return {"accepted": False, "reason": "payment_amount_or_currency_invalid"}
 
     cursor = conn.execute(
         """INSERT OR IGNORE INTO webhook_events
@@ -227,84 +230,146 @@ def process_razorpay_event(conn, payload: dict[str, Any], *, lead_id_override: i
         conn.commit()
         return {"accepted": True, "duplicate": True, "reason": "already_processed"}
 
-    lead_id = lead_id_override or _lead_id_from_payment(conn, payment, order_id)
-    if lead_id is not None:
-        lead_exists = conn.execute("SELECT 1 FROM leads WHERE id = ?", (lead_id,)).fetchone()
-        if lead_exists is None:
-            conn.commit()
-            return {"accepted": False, "reason": "lead_id_not_found"}
-    amount = payment.get("amount")
-    currency = str(payment.get("currency", "INR")).upper()
-    try:
-        amount_int = int(amount)
-    except (TypeError, ValueError):
-        amount_int = 0
-    if amount_int <= 0:
-        conn.commit()
-        return {"accepted": False, "reason": "payment_amount_invalid"}
-    if lead_id is None:
-        conn.execute(
-            "UPDATE webhook_events SET payload_json = ? WHERE provider = 'razorpay' AND idempotency_key = ?",
-            (raw, key),
-        )
-        conn.commit()
-        return {"accepted": True, "reconciliation_required": True, "reason": "payment_not_linked_to_lead"}
-
-    prior = conn.execute(
-        "SELECT id, lead_id, provider_payment_id, amount, currency, provider_order_id, status FROM payments WHERE provider_payment_id = ?",
-        (payment_id,),
-    ).fetchone()
-    if prior is None and order_id:
-        # A previously registered order (from the checkout service) can be
-        # completed in-place, preserving its lead/order mapping and avoiding
-        # an orphan pending row beside the captured payment.
-        prior = conn.execute(
-            """SELECT id, lead_id, provider_payment_id, amount, currency, provider_order_id, status
-               FROM payments WHERE lower(provider) = 'razorpay'
-               AND provider_order_id = ? AND provider_payment_id IS NULL
+    # A website checkout order must already be present in our database. Its
+    # expected amount/currency and client-request mapping are authoritative.
+    order_row = None
+    if order_id:
+        order_row = conn.execute(
+            """SELECT id,lead_id,provider_payment_id,amount,currency,status,client_request_public_id
+               FROM payments WHERE lower(provider)='razorpay' AND provider_order_id=?
                ORDER BY id DESC LIMIT 1""",
             (order_id,),
         ).fetchone()
-    if prior is not None:
-        if prior["lead_id"] not in (None, lead_id):
+
+    if order_row is not None:
+        if int(order_row["amount"] or 0) != amount_int:
+            conn.commit()
+            return {"accepted": False, "reason": "payment_amount_mismatch"}
+        if str(order_row["currency"] or "").upper() != currency:
+            conn.commit()
+            return {"accepted": False, "reason": "payment_currency_mismatch"}
+        if order_row["provider_payment_id"] and str(order_row["provider_payment_id"]) != payment_id:
+            conn.commit()
+            return {"accepted": False, "reason": "order_already_linked_to_another_payment"}
+
+        prior_payment = conn.execute(
+            """SELECT id,provider_order_id,client_request_public_id
+               FROM payments WHERE provider='razorpay' AND provider_payment_id=? LIMIT 1""",
+            (payment_id,),
+        ).fetchone()
+        if prior_payment is not None and int(prior_payment["id"]) != int(order_row["id"]):
+            conn.commit()
+            return {"accepted": False, "reason": "payment_id_already_mapped_to_another_order"}
+
+        request_public_id = order_row["client_request_public_id"]
+        if request_public_id:
+            request_row = conn.execute(
+                "SELECT public_id,email,status FROM client_requests WHERE public_id=?",
+                (request_public_id,),
+            ).fetchone()
+            if request_row is None:
+                conn.commit()
+                return {"accepted": False, "reason": "client_request_mapping_missing"}
+            payer_email = str(payment.get("email") or "").strip().lower()
+            expected_email = str(request_row["email"] or "").strip().lower()
+            if payer_email and expected_email and payer_email != expected_email:
+                conn.commit()
+                return {"accepted": False, "reason": "payer_email_mismatch"}
+            if str(request_row["status"] or "").upper() in {"REJECTED", "DELIVERED", "SENDING", "DELIVERY_UNCERTAIN"}:
+                conn.commit()
+                return {"accepted": False, "reason": "client_request_not_payable"}
+
+            conn.execute(
+                """UPDATE payments SET provider_payment_id=?,status='captured',amount=?,currency=?
+                   WHERE id=?""",
+                (payment_id, amount_int, currency, order_row["id"]),
+            )
+            conn.execute(
+                """UPDATE client_requests
+                   SET status='PAID',payment_reference=?,updated_at=CURRENT_TIMESTAMP
+                   WHERE public_id=? AND status NOT IN ('DELIVERED','REJECTED')""",
+                (payment_id, request_public_id),
+            )
+            conn.execute(
+                "UPDATE webhook_events SET processed_at=? WHERE provider='razorpay' AND idempotency_key=?",
+                (datetime.now(timezone.utc).isoformat(), key),
+            )
+            conn.commit()
+            return {
+                "accepted": True,
+                "duplicate": False,
+                "reason": "client_request_payment_recorded",
+                "payment_id": payment_id,
+                "client_request_public_id": request_public_id,
+            }
+
+        # Preserve the existing lead-bound order flow, but enforce its stored
+        # amount and currency before the lead can be moved to PAID.
+        mapped_lead_id = int(order_row["lead_id"]) if order_row["lead_id"] is not None else None
+        event_lead_id = _lead_id_from_payment(conn, payment, order_id)
+        if mapped_lead_id is not None and event_lead_id is not None and mapped_lead_id != event_lead_id:
             conn.commit()
             return {"accepted": False, "reason": "payment_lead_mapping_conflict"}
-        if prior["amount"] not in (None, amount_int) or (prior["currency"] and prior["currency"].upper() != currency):
+        lead_id = lead_id_override or mapped_lead_id or event_lead_id
+        if lead_id is None:
+            conn.commit()
+            return {"accepted": True, "reconciliation_required": True, "reason": "payment_not_linked_to_lead"}
+        lead_exists = conn.execute("SELECT 1 FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if lead_exists is None:
+            conn.commit()
+            return {"accepted": False, "reason": "lead_id_not_found"}
+        conn.execute(
+            "UPDATE payments SET provider_payment_id=?,status='captured',amount=?,currency=? WHERE id=?",
+            (payment_id, amount_int, currency, order_row["id"]),
+        )
+        lead = conn.execute("SELECT state FROM leads WHERE id=?", (lead_id,)).fetchone()
+        if lead is not None and lead["state"] != LeadState.PAID.value:
+            transition(conn, lead_id, LeadState.PAID, reason=f"razorpay_payment_captured:{payment_id}", allow_terminal_payment_override=True)
+        conn.execute(
+            "UPDATE webhook_events SET processed_at=? WHERE provider='razorpay' AND idempotency_key=?",
+            (datetime.now(timezone.utc).isoformat(), key),
+        )
+        conn.commit()
+        return {"accepted": True, "duplicate": False, "reason": "payment_recorded", "lead_id": lead_id, "payment_id": payment_id}
+
+    # Backwards-compatible path for previously registered legacy lead orders or
+    # events carrying a known lead note. Newly generated client checkout links
+    # never use this fallback because they always have a client-request mapping.
+    lead_id = lead_id_override or _lead_id_from_payment(conn, payment, order_id)
+    prior = conn.execute(
+        """SELECT id,lead_id,provider_payment_id,amount,currency,provider_order_id
+           FROM payments WHERE provider='razorpay' AND provider_payment_id=? LIMIT 1""",
+        (payment_id,),
+    ).fetchone()
+    if prior is not None:
+        if prior["provider_order_id"] and str(prior["provider_order_id"]) != order_id:
+            conn.commit()
+            return {"accepted": False, "reason": "payment_id_already_mapped_to_another_order"}
+        if prior["amount"] not in (None, amount_int) or (prior["currency"] and str(prior["currency"]).upper() != currency):
             conn.commit()
             return {"accepted": False, "reason": "payment_amount_or_currency_conflict"}
-        if prior["provider_payment_id"] is None:
-            conn.execute(
-                """UPDATE payments SET lead_id = COALESCE(lead_id, ?), provider = 'razorpay',
-                   provider_payment_id = ?, provider_order_id = COALESCE(provider_order_id, ?),
-                   amount = ?, currency = ?, status = 'captured' WHERE id = ?""",
-                (lead_id, payment_id, order_id, amount_int, currency, prior["id"]),
-            )
-        else:
-            conn.execute(
-                """UPDATE payments SET lead_id = COALESCE(lead_id, ?), provider = 'razorpay',
-                   provider_order_id = COALESCE(provider_order_id, ?), amount = ?, currency = ?, status = 'captured'
-                   WHERE provider_payment_id = ?""",
-                (lead_id, order_id, amount_int, currency, payment_id),
-            )
-    else:
-        conn.execute(
-            """INSERT INTO payments
-               (lead_id, provider, provider_payment_id, provider_order_id, amount, currency, status)
-               VALUES (?, 'razorpay', ?, ?, ?, ?, 'captured')""",
-            (lead_id, payment_id, order_id, amount_int, currency),
-        )
+        conn.commit()
+        return {"accepted": True, "duplicate": True, "reason": "already_processed"}
 
-    lead = conn.execute("SELECT state FROM leads WHERE id = ?", (lead_id,)).fetchone()
-    if lead is not None and lead["state"] != LeadState.PAID.value:
-        transition(
-            conn,
-            lead_id,
-            LeadState.PAID,
-            reason=f"razorpay_payment_captured:{payment_id}",
-            allow_terminal_payment_override=True,
-        )
+    if lead_id is None:
+        conn.commit()
+        return {"accepted": True, "reconciliation_required": True, "reason": "payment_not_linked_to_known_order_or_lead"}
+
+    lead_exists = conn.execute("SELECT 1 FROM leads WHERE id=?", (lead_id,)).fetchone()
+    if lead_exists is None:
+        conn.commit()
+        return {"accepted": False, "reason": "lead_id_not_found"}
     conn.execute(
-        "UPDATE webhook_events SET processed_at = ? WHERE provider = 'razorpay' AND idempotency_key = ?",
+        """INSERT INTO payments
+           (lead_id,provider,provider_payment_id,amount,currency,status,provider_order_id)
+           VALUES (?, 'razorpay', ?, ?, ?, 'captured', ?)""",
+        (lead_id, payment_id, amount_int, currency, order_id),
+    )
+    lead = conn.execute("SELECT state FROM leads WHERE id=?", (lead_id,)).fetchone()
+    if lead is not None and lead["state"] != LeadState.PAID.value:
+        transition(conn, lead_id, LeadState.PAID, reason=f"razorpay_payment_captured:{payment_id}", allow_terminal_payment_override=True)
+    conn.execute(
+        "UPDATE webhook_events SET processed_at=? WHERE provider='razorpay' AND idempotency_key=?",
         (datetime.now(timezone.utc).isoformat(), key),
     )
     conn.commit()

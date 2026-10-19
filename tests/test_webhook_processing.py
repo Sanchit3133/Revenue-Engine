@@ -3,6 +3,7 @@ import hmac
 import json
 import sqlite3
 import unittest
+from datetime import datetime, timezone
 from app.database import SCHEMA
 from app.models import LeadState
 from app.webhook_processing import (
@@ -138,6 +139,103 @@ class TestWebhookProcessing(unittest.TestCase):
         result = process_razorpay_event(self.conn, payload)
         self.assertFalse(result["accepted"])
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM payments").fetchone()[0], 0)
+
+
+
+    def _client_request_order(self, *, amount=49000, currency="INR"):
+        request_public_id = "checkout-request-01"
+        self.conn.execute(
+            """INSERT INTO client_requests
+               (public_id,consent_at,business_name,email,request_type,message,status,draft_filename,
+                draft_content,draft_content_type,draft_source)
+               VALUES (?,?,'Example Coaching','buyer@example.com','delivery','Build a course page',
+                       'AWAITING_PAYMENT','draft.html','<h1>Draft</h1>','text/html','template_fallback')""",
+            (request_public_id, datetime.now(timezone.utc).isoformat()),
+        )
+        self.conn.execute(
+            """INSERT INTO payments
+               (lead_id,provider,provider_payment_id,amount,currency,status,provider_order_id,client_request_public_id)
+               VALUES (NULL,'razorpay',NULL,?,?,'link_sent','order_checkout_01',?)""",
+            (amount, currency, request_public_id),
+        )
+        self.conn.commit()
+        return request_public_id
+
+    def _client_request_payment_payload(self, *, amount=49000, currency="INR", email="buyer@example.com", event_id="evt_checkout_01"):
+        return {
+            "id": event_id,
+            "event": "payment.captured",
+            "payload": {"payment": {"entity": {
+                "id": "pay_checkout_01",
+                "order_id": "order_checkout_01",
+                "status": "captured",
+                "captured": True,
+                "amount": amount,
+                "currency": currency,
+                "email": email,
+                "notes": {},
+            }}},
+        }
+
+    def test_client_request_payment_marks_paid_only_after_matching_capture(self):
+        request_public_id = self._client_request_order()
+        payload = self._client_request_payment_payload()
+        result = process_razorpay_event(self.conn, payload)
+        request = self.conn.execute(
+            "SELECT status,payment_reference FROM client_requests WHERE public_id=?",
+            (request_public_id,),
+        ).fetchone()
+        payment = self.conn.execute(
+            "SELECT amount,currency,status,client_request_public_id FROM payments WHERE provider_order_id='order_checkout_01'"
+        ).fetchone()
+        self.assertTrue(result["accepted"])
+        self.assertEqual(request["status"], "PAID")
+        self.assertEqual(request["payment_reference"], "pay_checkout_01")
+        self.assertEqual(tuple(payment), (49000, "INR", "captured", request_public_id))
+
+        duplicate = process_razorpay_event(self.conn, payload)
+        self.assertTrue(duplicate["duplicate"])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM payments WHERE provider_payment_id='pay_checkout_01'").fetchone()[0],
+            1,
+        )
+
+    def test_client_request_payment_amount_mismatch_never_marks_paid(self):
+        request_public_id = self._client_request_order()
+        result = process_razorpay_event(self.conn, self._client_request_payment_payload(amount=48000))
+        status = self.conn.execute(
+            "SELECT status FROM client_requests WHERE public_id=?",
+            (request_public_id,),
+        ).fetchone()[0]
+        payment_status = self.conn.execute(
+            "SELECT status FROM payments WHERE provider_order_id='order_checkout_01'"
+        ).fetchone()[0]
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reason"], "payment_amount_mismatch")
+        self.assertEqual(status, "AWAITING_PAYMENT")
+        self.assertEqual(payment_status, "link_sent")
+
+    def test_client_request_payment_currency_mismatch_never_marks_paid(self):
+        request_public_id = self._client_request_order()
+        result = process_razorpay_event(self.conn, self._client_request_payment_payload(currency="USD", event_id="evt_checkout_currency"))
+        status = self.conn.execute(
+            "SELECT status FROM client_requests WHERE public_id=?",
+            (request_public_id,),
+        ).fetchone()[0]
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reason"], "payment_currency_mismatch")
+        self.assertEqual(status, "AWAITING_PAYMENT")
+
+    def test_client_request_payment_payer_email_mismatch_never_marks_paid(self):
+        request_public_id = self._client_request_order()
+        result = process_razorpay_event(self.conn, self._client_request_payment_payload(email="other@example.com", event_id="evt_checkout_email"))
+        status = self.conn.execute(
+            "SELECT status FROM client_requests WHERE public_id=?",
+            (request_public_id,),
+        ).fetchone()[0]
+        self.assertFalse(result["accepted"])
+        self.assertEqual(result["reason"], "payer_email_mismatch")
+        self.assertEqual(status, "AWAITING_PAYMENT")
 
 
 if __name__ == "__main__":

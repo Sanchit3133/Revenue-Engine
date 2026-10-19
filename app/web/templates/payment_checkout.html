@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure payment | Revenue Engine</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;font:16px/1.6 system-ui,-apple-system,'Segoe UI',sans-serif;color:#101828;background:#f8fafc}.wrap{max-width:620px;margin:7vh auto;padding:20px}.card{background:#fff;border:1px solid #e4e7ec;border-radius:20px;padding:30px;box-shadow:0 12px 36px rgba(16,24,40,.06)}h1{line-height:1.18}.muted{color:#475467}.amount{font-size:2.6rem;font-weight:850;letter-spacing:-.04em;margin:18px 0}.button{width:100%;border:0;border-radius:12px;padding:15px 18px;background:#101828;color:#fff;font:inherit;font-weight:800;cursor:pointer}.button:disabled{opacity:.6;cursor:wait}.notice{margin-top:16px;padding:13px 15px;border-radius:10px;background:#eff8ff;color:#175cd3}footer{font-size:13px;color:#667085;margin-top:20px}
+</style></head><body><main class="wrap"><article class="card">
+<p class="muted"><strong>Revenue Engine</strong> · Secure checkout</p>
+<h1>Payment for your project</h1>
+<p class="muted">This payment was prepared for <strong>{{ business_name }}</strong> after a project request and owner-approved quote.</p>
+<div class="amount">₹{{ '%.2f'|format(amount / 100) }}</div>
+<p class="muted">Reference: <strong>{{ order_id }}</strong></p>
+<button id="pay-button" class="button" type="button">Continue to secure payment</button>
+<div id="status" role="status" aria-live="polite"></div>
+<footer>Payments are processed by Razorpay. Revenue Engine does not collect or store card numbers or CVVs. A payment is considered confirmed only after server-side verification of the payment event.</footer>
+</article></main>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+(function(){
+  const button=document.getElementById("pay-button");
+  const status=document.getElementById("status");
+  const options={
+    key: {{ key_id|tojson }},
+    amount: {{ amount|int }},
+    currency: {{ currency|tojson }},
+    name: "Revenue Engine",
+    description: "Approved project quote",
+    order_id: {{ order_id|tojson }},
+    prefill: {},
+    theme: {color:"#101828"},
+    handler: async function(response){
+      button.disabled=true;
+      status.className="notice";
+      status.textContent="Verifying the payment response. Please keep this page open.";
+      try{
+        const result=await fetch({{ url_for('payment_checkout.verify_checkout_result', token=payment_token)|tojson }},{
+          method:"POST",
+          headers:{"Content-Type":"application/json"},
+          body:JSON.stringify(response),
+          credentials:"same-origin"
+        });
+        const body=await result.json();
+        if(!result.ok || !body.verified) throw new Error(body.error||"verification_failed");
+        status.textContent="Payment response verified. Final confirmation is pending from Razorpay; the owner dashboard will update when the signed payment event arrives.";
+      }catch(error){
+        status.textContent="We could not confirm the payment response here. Do not pay again yet. Contact us with order reference {{ order_id }} so the provider status can be checked.";
+      }finally{button.disabled=false;}
+    },
+    modal:{ondismiss:function(){status.className="notice";status.textContent="Checkout was closed. No payment confirmation has been recorded by Revenue Engine."}}
+  };
+  button.addEventListener("click",function(){
+    if(typeof window.Razorpay!=="function"){
+      status.className="notice";
+      status.textContent="Secure checkout could not load. Check your connection and try again later.";
+      return;
+    }
+    new window.Razorpay(options).open();
+  });
+})();
+</script></body></html>
