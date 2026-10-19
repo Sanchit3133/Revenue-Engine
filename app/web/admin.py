@@ -1,7 +1,7 @@
 """Authenticated owner dashboard and explicit delivery approval workflow."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 from functools import wraps
 import io
@@ -15,7 +15,8 @@ from flask import Blueprint, abort, flash, redirect, render_template, request, s
 
 from app.config import settings
 from app.database import connect
-from app.notifications import deliver_approved_file
+from app.notifications import deliver_approved_file, send_brevo_email
+from app.payment_checkout import amount_to_minor_units, checkout_token, create_razorpay_order, token_hash
 from app.models import LeadState
 from app.outreach import prepare_first_contact
 from app.reply_processor import process_reply
@@ -191,6 +192,171 @@ def owner_dashboard():
         notification_configured=bool(getattr(settings, "owner_notification_email", None) and getattr(settings, "brevo_api_key", None) and getattr(settings, "brevo_sender", None)),
         google_configured=bool(getattr(settings, "google_api_key", None)),
     )
+
+
+@admin_bp.post("/owner/requests/<int:request_id>/payment-link")
+@_owner_required
+def create_or_resend_payment_link(request_id: int):
+    """Owner-approved quote action; creates an order and emails a one-use checkout link."""
+    if not _csrf_valid(request.form.get("csrf_token", "")):
+        abort(400, description="Invalid CSRF token")
+
+    amount_raw = (request.form.get("amount_rupees") or "").strip()
+    currency = (request.form.get("currency") or "INR").strip().upper()
+    scope_note = (request.form.get("scope_note") or "").strip()[:1000]
+    if currency != "INR":
+        flash("Phase 1 checkout is enabled for INR only.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    try:
+        amount_minor = amount_to_minor_units(amount_raw, currency=currency)
+    except ValueError as exc:
+        flash(str(exc), "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    if len(scope_note) < 8:
+        flash("Record the agreed written scope or agreement reference before requesting payment.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+    key_id = getattr(settings, "razorpay_key_id", None)
+    key_secret = getattr(settings, "razorpay_key_secret", None)
+    signing_secret = getattr(settings, "flask_secret_key", None)
+    if not key_id or not key_secret or not signing_secret:
+        flash("Checkout is not configured. Add RAZORPAY_KEY_ID, RAZORPAY_KEY_SECRET, and FLASK_SECRET_KEY in the published deployment secrets.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    if not getattr(settings, "brevo_api_key", None) or not getattr(settings, "brevo_sender", None):
+        flash("Configure BREVO_API_KEY and BREVO_SENDER before sending a payment link.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+    public_app_url = str(getattr(settings, "public_app_url", "") or "").rstrip("/")
+    if not public_app_url.startswith("https://"):
+        flash("PUBLIC_APP_URL must be the HTTPS published URL before a checkout link can be sent.", "error")
+        return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+    with connect() as conn:
+        row = conn.execute(
+            """SELECT id,public_id,business_name,email,request_type,status,consent_at,
+                      draft_filename,draft_content,scope_confirmed
+               FROM client_requests WHERE id=?""",
+            (request_id,),
+        ).fetchone()
+        if row is None:
+            abort(404)
+        if row["request_type"] != "delivery" or not row["consent_at"] or not row["draft_content"] or not row["draft_filename"]:
+            flash("Only a consented delivery request with a generated private draft can be quoted.", "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+        if str(row["status"]).upper() in {"DELIVERED", "REJECTED", "SENDING", "DELIVERY_UNCERTAIN", "PAID"}:
+            flash(f"Cannot create a payment link while this request is {row['status']}.", "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+        existing = conn.execute(
+            """SELECT id,amount,currency,status,provider_order_id,checkout_expires_at
+               FROM payments WHERE lower(provider)='razorpay' AND client_request_public_id=?
+               ORDER BY id DESC LIMIT 1""",
+            (row["public_id"],),
+        ).fetchone()
+
+        if existing and str(existing["status"]).lower() in {"link_sent", "link_email_failed"}:
+            if int(existing["amount"] or 0) != amount_minor or str(existing["currency"] or "").upper() != currency:
+                flash("A payment order already exists for a different quote. Do not create a second order automatically; reconcile the existing order first.", "error")
+                return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+            if str(existing["status"]).lower() == "link_sent":
+                flash("A payment link has already been sent for this request. Check its status before sending another.", "warning")
+                return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+            # Reuse the existing order after a definite email rejection; don't create
+            # another provider order. A timeout is marked link_email_uncertain below
+            # and intentionally cannot be retried automatically.
+            order_id = str(existing["provider_order_id"] or "")
+            expiry_text = str(existing["checkout_expires_at"] or "")
+            if not order_id or not expiry_text:
+                flash("The saved payment order is incomplete and needs manual reconciliation.", "error")
+                return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+            token = checkout_token(secret=str(signing_secret), request_public_id=str(row["public_id"]), order_id=order_id, expires_at=expiry_text)
+            payment_row_id = int(existing["id"])
+            resend_existing = True
+        elif existing:
+            flash(f"A Razorpay order already exists for this request with status {existing['status']}. Review/reconcile it before creating another.", "warning")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+        else:
+            conn.execute(
+                """INSERT INTO payments
+                   (lead_id,provider,amount,currency,status,client_request_public_id)
+                   VALUES (NULL,'razorpay',?,?,'order_creating',?)""",
+                (amount_minor, currency, row["public_id"]),
+            )
+            payment_row_id = int(conn.execute("SELECT id FROM payments WHERE client_request_public_id=? ORDER BY id DESC LIMIT 1", (row["public_id"],)).fetchone()[0])
+            conn.execute(
+                "UPDATE client_requests SET scope_confirmed=1,approval_note=?,status='PAYMENT_ORDER_CREATING',updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                (scope_note, request_id),
+            )
+            _audit(conn, "payment_order_creation_started", str(row["public_id"]), f"currency={currency};amount_minor={amount_minor};scope_note_recorded=true")
+            conn.commit()
+            resend_existing = False
+            token = ""
+            order_id = ""
+            expiry_text = ""
+
+    if not resend_existing:
+        result = create_razorpay_order(
+            key_id=str(key_id),
+            key_secret=str(key_secret),
+            amount_minor=amount_minor,
+            currency=currency,
+            receipt=("re-" + secrets.token_hex(16))[:40],
+            request_public_id=str(row["public_id"]),
+        )
+        if not result.get("success"):
+            payment_status = "order_creation_uncertain" if result.get("uncertain") else "order_failed"
+            request_status = "PAYMENT_ORDER_UNCERTAIN" if result.get("uncertain") else "PAYMENT_LINK_FAILED"
+            with connect() as conn:
+                conn.execute("UPDATE payments SET status=? WHERE id=? AND status='order_creating'", (payment_status, payment_row_id))
+                conn.execute("UPDATE client_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (request_status, request_id))
+                _audit(conn, "payment_order_creation_failed", str(row["public_id"]), str(result.get("reason", "failed"))[:500])
+                conn.commit()
+            flash("Razorpay order creation did not complete. " + ("The provider response may be ambiguous; inspect Razorpay Test/Live Dashboard activity before retrying." if result.get("uncertain") else "Check API credentials and the reported order error before retrying."), "error")
+            return redirect(url_for("admin.owner_dashboard") + "#client-requests")
+
+        order_id = str(result["order_id"])
+        expiry_text = (datetime.now(timezone.utc) + timedelta(days=7)).isoformat()
+        token = checkout_token(secret=str(signing_secret), request_public_id=str(row["public_id"]), order_id=order_id, expires_at=expiry_text)
+        with connect() as conn:
+            conn.execute(
+                """UPDATE payments SET provider_order_id=?,checkout_token_hash=?,checkout_expires_at=?,status='order_created'
+                   WHERE id=? AND status='order_creating'""",
+                (order_id, token_hash(token), expiry_text, payment_row_id),
+            )
+            conn.commit()
+
+    payment_url = f"{public_app_url}/pay/{token}"
+    email_body = (
+        f"Hello {row['business_name']},\n\n"
+        "Following your Revenue Engine consultation and the agreed project scope, here is your secure payment link.\n\n"
+        f"Project request reference: {row['public_id']}\n"
+        f"Approved amount: ₹{amount_minor / 100:.2f} {currency}\n"
+        f"Razorpay order reference: {order_id}\n"
+        f"Secure checkout: {payment_url}\n\n"
+        "The link expires in 7 days. Payment is considered received only after provider verification. "
+        "The generated HTML is a private draft; delivery remains subject to payment verification and owner approval.\n\n"
+        "If the amount or scope does not match your written agreement, do not pay and reply to this email.\n"
+        "Revenue Engine"
+    )
+    email_result = send_brevo_email(
+        to_email=str(row["email"]),
+        subject=f"Approved project quote and payment link — {row['public_id']}",
+        body=email_body,
+    )
+    email_status = "link_sent" if email_result.get("success") else ("link_email_uncertain" if email_result.get("uncertain") else "link_email_failed")
+    request_status = "AWAITING_PAYMENT" if email_result.get("success") else ("PAYMENT_LINK_EMAIL_UNCERTAIN" if email_result.get("uncertain") else "PAYMENT_LINK_FAILED")
+    with connect() as conn:
+        conn.execute("UPDATE payments SET status=? WHERE id=? AND status IN ('order_created','link_email_failed')", (email_status, payment_row_id))
+        conn.execute("UPDATE client_requests SET status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?", (request_status, request_id))
+        _audit(conn, "payment_link_email_result", str(row["public_id"]), f"status={email_status};currency={currency};amount_minor={amount_minor};reason={email_result.get('reason','unknown')}")
+        conn.commit()
+
+    if email_result.get("success"):
+        flash("Approved quote and secure payment link were emailed. The request will become PAID only after a valid captured-payment webhook matches the order, amount, and currency.", "success")
+    elif email_result.get("uncertain"):
+        flash("The email provider outcome is uncertain. Check Brevo activity before retrying; the system will not auto-resend.", "warning")
+    else:
+        flash("Payment order created, but Brevo rejected the quote email. No automatic retry was attempted; resolve the email setup before an explicit resend.", "error")
+    return redirect(url_for("admin.owner_dashboard") + "#client-requests")
 
 
 def _verified_captured_payment(conn, payment_reference: str, customer_email: str) -> bool:
