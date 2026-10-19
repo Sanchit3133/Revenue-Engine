@@ -129,6 +129,9 @@ def owner_dashboard():
             "consultations": conn.execute("SELECT COUNT(*) FROM consultation_submissions").fetchone()[0],
             "payments": conn.execute("SELECT COUNT(*) FROM payments").fetchone()[0],
             "captured_payments": conn.execute("SELECT COUNT(*) FROM payments WHERE lower(COALESCE(status,'')) IN ('captured','paid','success')").fetchone()[0],
+            "quotes": conn.execute("SELECT COUNT(*) FROM client_orders").fetchone()[0],
+            "open_payment_quotes": conn.execute("SELECT COUNT(*) FROM client_orders WHERE status IN ('QUOTED','ORDER_CREATED','ORDER_CREATING')").fetchone()[0],
+            "paid_quotes": conn.execute("SELECT COUNT(*) FROM client_orders WHERE status='PAID'").fetchone()[0],
             "pending_requests": conn.execute("SELECT COUNT(*) FROM client_requests WHERE status IN ('PENDING_REVIEW','APPROVED','DELIVERY_UNCERTAIN')").fetchone()[0],
             "delivered_files": conn.execute("SELECT COUNT(*) FROM client_requests WHERE status='DELIVERED'").fetchone()[0],
             "webhook_events": conn.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0],
@@ -160,7 +163,16 @@ def owner_dashboard():
                FROM consultation_messages ORDER BY id DESC LIMIT 50"""
         ).fetchall()
         requests_rows = conn.execute(
-            "SELECT id,public_id,business_name,email,request_type,status,draft_source,draft_error,scope_confirmed,payment_reference,created_at FROM client_requests ORDER BY id DESC LIMIT 15"
+            """SELECT r.id,r.public_id,r.business_name,r.email,r.request_type,r.status,r.draft_source,
+                      r.draft_error,r.scope_confirmed,r.payment_reference,r.created_at,
+                      o.public_id AS quote_public_id,o.amount AS quote_amount,o.currency AS quote_currency,
+                      o.status AS quote_status,o.razorpay_order_id,o.razorpay_payment_id,
+                      o.expires_at AS quote_expires_at,o.error_note AS quote_error
+               FROM client_requests AS r
+               LEFT JOIN client_orders AS o ON o.id=(
+                   SELECT MAX(o2.id) FROM client_orders AS o2 WHERE o2.client_request_id=r.id
+               )
+               ORDER BY r.id DESC LIMIT 15"""
         ).fetchall()
         events = conn.execute(
             "SELECT provider,event_type,resource_id,received_at,processed_at FROM webhook_events ORDER BY id DESC LIMIT 8"
@@ -191,20 +203,29 @@ def owner_dashboard():
         email_provider=getattr(settings, "email_provider", "unknown"),
         hf_configured=bool(getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None)),
         notification_configured=bool(getattr(settings, "owner_notification_email", None) and getattr(settings, "brevo_api_key", None) and getattr(settings, "brevo_sender", None)),
+        brevo_webhook_configured=bool(getattr(settings, "brevo_webhook_token", None)),
+        razorpay_api_configured=bool(getattr(settings, "razorpay_key_id", None) and getattr(settings, "razorpay_key_secret", None)),
+        razorpay_webhook_configured=bool(getattr(settings, "razorpay_webhook_secret", None)),
+        razorpay_live_enabled=bool(getattr(settings, "razorpay_live_payments_enabled", False)),
         google_configured=bool(getattr(settings, "google_api_key", None)),
     )
 
 
-def _verified_captured_payment(conn, payment_reference: str, customer_email: str) -> bool:
-    """Require a known captured payment ID and reject known payer mismatches.
-
-    A payment may be in the payments table, or may be a captured, signed Razorpay
-    event retained in webhook_events while awaiting explicit reconciliation. If
-    the webhook provides payer email, it must match the customer's request email.
-    """
+def _verified_captured_payment(
+    conn, payment_reference: str, customer_email: str, client_request_id: int | None = None
+) -> bool:
+    """Require an exact paid quote mapping and reject known payer mismatches."""
     reference = (payment_reference or "").strip()
     expected_email = (customer_email or "").strip().lower()
-    if not reference or not expected_email:
+    if not reference or not expected_email or client_request_id is None:
+        return False
+    mapped_order = conn.execute(
+        """SELECT 1 FROM client_orders
+           WHERE client_request_id=? AND razorpay_payment_id=? AND status='PAID'
+           LIMIT 1""",
+        (client_request_id, reference),
+    ).fetchone()
+    if mapped_order is None:
         return False
     row = conn.execute(
         """SELECT 1 FROM payments
@@ -408,7 +429,7 @@ def update_client_request(request_id: int):
             if not (row["payment_reference"] or "").strip():
                 flash("Approval blocked: enter the verified captured Razorpay payment ID first.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
-            if not _verified_captured_payment(conn, row["payment_reference"], row["email"]):
+            if not _verified_captured_payment(conn, row["payment_reference"], row["email"], request_id):
                 flash("Approval blocked: that reference does not match a captured Razorpay payment record or a signed captured-payment event in this database. Verify/reconcile the payment before retrying.", "error")
                 return redirect(url_for("admin.owner_dashboard") + "#client-requests")
             if not row["draft_content"] or not row["draft_filename"]:
