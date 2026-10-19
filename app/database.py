@@ -135,6 +135,28 @@ CREATE TABLE IF NOT EXISTS client_requests (
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, approved_at TEXT,
     delivered_at TEXT
 );
+CREATE TABLE IF NOT EXISTS client_orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    public_id TEXT NOT NULL UNIQUE,
+    client_request_id INTEGER NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    amount INTEGER NOT NULL,
+    currency TEXT NOT NULL DEFAULT 'INR',
+    scope_summary TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'QUOTE_PREPARED',
+    razorpay_order_id TEXT UNIQUE,
+    razorpay_payment_id TEXT UNIQUE,
+    expires_at TEXT NOT NULL,
+    quote_sent_at TEXT,
+    paid_at TEXT,
+    error_note TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (client_request_id) REFERENCES client_requests(id)
+);
+CREATE INDEX IF NOT EXISTS idx_client_orders_request ON client_orders(client_request_id, id);
+CREATE INDEX IF NOT EXISTS idx_client_orders_status ON client_orders(status, expires_at);
+
 CREATE TABLE IF NOT EXISTS consultation_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT, consultation_public_id TEXT NOT NULL,
     role TEXT NOT NULL CHECK(role IN ('user','assistant')), content TEXT NOT NULL,
