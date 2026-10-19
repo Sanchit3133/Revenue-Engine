@@ -55,6 +55,9 @@ class Settings:
     sendgrid_reply_to: str | None
 
     razorpay_webhook_secret: str | None
+    razorpay_key_id: str | None
+    razorpay_key_secret: str | None = field(repr=False)
+    razorpay_live_payments_enabled: bool
     flask_secret_key: str | None
     owner_dashboard_password: str | None
     owner_notification_email: str | None
@@ -115,6 +118,9 @@ def load_settings() -> Settings:
         sendgrid_sender=_optional_env("SENDGRID_SENDER"),
         sendgrid_reply_to=_optional_env("SENDGRID_REPLY_TO"),
         razorpay_webhook_secret=_optional_env("RAZORPAY_WEBHOOK_SECRET"),
+        razorpay_key_id=_optional_env("RAZORPAY_KEY_ID"),
+        razorpay_key_secret=_optional_env("RAZORPAY_KEY_SECRET"),
+        razorpay_live_payments_enabled=os.getenv("RAZORPAY_LIVE_PAYMENTS_ENABLED", "false").strip().lower() in {"1", "true", "yes", "on"},
         flask_secret_key=_optional_env("FLASK_SECRET_KEY"),
         owner_dashboard_password=_optional_env("OWNER_DASHBOARD_PASSWORD"),
         owner_notification_email=_optional_env("OWNER_NOTIFICATION_EMAIL"),
