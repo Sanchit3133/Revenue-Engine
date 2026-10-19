@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Secure quote checkout | Revenue Engine</title>
+<style>
+*{box-sizing:border-box}body{margin:0;padding:28px 16px;background:#f5f7fb;color:#101828;font:16px/1.6 system-ui,-apple-system,"Segoe UI",sans-serif}.wrap{max-width:720px;margin:20px auto}.card{background:#fff;border:1px solid #e4e7ec;border-radius:18px;padding:28px;box-shadow:0 12px 34px rgba(16,24,40,.06)}.muted{color:#475467}.amount{font-size:36px;font-weight:800;letter-spacing:-1px;margin:5px 0 18px}.label{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:#667085;font-weight:700}.button{display:inline-flex;align-items:center;justify-content:center;background:#101828;color:white;border:0;border-radius:10px;padding:13px 18px;font-weight:800;font-size:15px;cursor:pointer}.button:disabled{opacity:.45;cursor:not-allowed}.notice{border-radius:10px;padding:13px 15px;margin:18px 0}.warn{background:#fffaeb;color:#93370d}.good{background:#ecfdf3;color:#067647}.error{background:#fef3f2;color:#b42318}.scope{white-space:pre-wrap;background:#f9fafb;border:1px solid #eaecf0;border-radius:10px;padding:15px}.small{font-size:13px;color:#667085}a{color:inherit}
+</style>
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+</head>
+<body><main class="wrap"><article class="card">
+<p><a href="/">← Revenue Engine</a></p>
+<p class="label">Secure payment link</p>
+<h1>Quote checkout</h1>
+{% if state == 'paid' %}
+<div class="notice good"><strong>Payment confirmed.</strong><br>Your payment has been recorded. Revenue Engine's owner will review the order before the draft or deliverable is sent.</div>
+<p>Request: <strong>{{ order.business_name }}</strong></p><p class="small">Quote reference: {{ order.public_id }}</p>
+{% elif state == 'checkout' %}
+<p class="muted">Hello {{ order.business_name }}. Please review the approved scope and amount below before continuing to Razorpay.</p>
+<div class="label">Amount due · {{ order.currency }}</div><div class="amount">{{ order.currency }} {{ amount_display }}</div>
+<div class="label">Agreed scope</div><div class="scope">{{ order.scope_summary }}</div>
+<p class="small">Quote reference: {{ order.public_id }} · Request reference: {{ order.client_request_id }}<br>Quote expiry: {{ order.expires_at }}</p>
+{% if not checkout_configured %}
+<div class="notice warn"><strong>Online payment setup is not ready.</strong><br>The service owner must configure Razorpay Test Mode API credentials before checkout can begin. You will not be charged on this page right now.</div>
+{% endif %}
+<div id="payment-message" class="notice warn" role="status" hidden></div>
+<button id="pay-button" class="button" type="button" {% if not checkout_configured %}disabled{% endif %}>Continue to secure payment</button>
+<p class="small">The price comes from the approved quote stored by Revenue Engine, not from your browser. Payment confirmation may take a moment. Do not pay again if the page says confirmation is pending.</p>
+{% else %}
+<div class="notice warn"><strong>This quote is not currently payable.</strong><br>{{ error or "The link may have expired, been superseded, or require owner review. Contact Revenue Engine with your request reference." }}</div>
+{% endif %}
+</article></main>
+{% if state == 'checkout' and checkout_configured %}
+<script>
+(() => {
+  const token = {{ token|tojson }};
+  const csrf = {{ csrf_token|tojson }};
+  const button = document.getElementById("pay-button");
+  const message = document.getElementById("payment-message");
+  function show(text, kind = "warn") {
+    message.className = "notice " + kind;
+    message.textContent = text;
+    message.hidden = false;
+  }
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    show("Preparing the secure checkout…");
+    try {
+      const response = await fetch("/pay/" + encodeURIComponent(token) + "/order", {
+        method: "POST",
+        headers: {"X-CSRF-Token": csrf}
+      });
+      const order = await response.json();
+      if (!response.ok) throw new Error(order.error || "Checkout could not be prepared.");
+      const checkout = new Razorpay({
+        key: order.key_id,
+        amount: order.amount,
+        currency: order.currency,
+        order_id: order.order_id,
+        name: "Revenue Engine",
+        description: "Approved project quote",
+        handler: async (result) => {
+          show("Verifying payment with Razorpay. Do not pay again while this is pending.");
+          try {
+            const verify = await fetch("/pay/" + encodeURIComponent(token) + "/verify", {
+              method: "POST",
+              headers: {"Content-Type": "application/json", "X-CSRF-Token": csrf},
+              body: JSON.stringify(result)
+            });
+            const body = await verify.json();
+            if (verify.ok && body.status === "paid") {
+              show(body.message, "good");
+              button.hidden = true;
+            } else if (verify.status === 202 || body.status === "pending") {
+              show(body.message || "Payment confirmation is pending. Do not pay again.");
+            } else {
+              show(body.error || "Payment needs reconciliation. Do not pay again; contact support.");
+            }
+          } catch (_) {
+            show("Payment may have completed but confirmation could not be checked. Do not pay again; contact Revenue Engine with your quote reference.");
+          }
+        },
+        modal: {ondismiss: () => {
+          button.disabled = false;
+          show("Checkout was closed. No payment confirmation was received.");
+        }},
+        theme: {color: "#101828"}
+      });
+      checkout.on("payment.failed", () => {
+        show("Razorpay reported that this payment attempt failed. Check your Razorpay activity before trying again.");
+        button.disabled = false;
+      });
+      checkout.open();
+      show("Razorpay Checkout opened. Complete payment in its secure window.");
+    } catch (error) {
+      show(error.message || "Checkout could not be prepared.");
+      button.disabled = false;
+    }
+  });
+})();
+</script>
+{% endif %}
+</body></html>
