@@ -313,15 +313,8 @@ def create_request_quote(request_id: int):
         conn.execute(
             """INSERT INTO client_orders
                (public_id,client_request_id,token_hash,amount,currency,scope_summary,status,expires_at)
-               VALUES(?,?,?,?,?,'', 'QUOTE_PREPARED', ?)""".replace("VALUES(?,?,?,?,?,'', 'QUOTE_PREPARED', ?)", "VALUES(?,?,?,?,?,?,'QUOTE_PREPARED', ?)"),
+               VALUES(?,?,?,?,?,?,'QUOTE_PREPARED',?)""",
             (public_id, request_id, token_hash, amount_minor, "INR", scope_summary, expiry),
-        )
-        order_row = conn.execute(
-            "SELECT id FROM client_orders WHERE public_id=?", (public_id,)
-        ).fetchone()
-        conn.execute(
-            """UPDATE client_orders SET scope_summary=? WHERE public_id=?""",
-            (scope_summary, public_id),
         )
         conn.execute(
             """UPDATE client_requests SET scope_confirmed=1,approval_note=?,updated_at=CURRENT_TIMESTAMP
