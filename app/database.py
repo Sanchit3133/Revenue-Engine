@@ -64,6 +64,7 @@ CREATE TABLE IF NOT EXISTS payments (
     provider_payment_id TEXT UNIQUE, amount INTEGER,
     currency TEXT DEFAULT 'INR', status TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, provider_order_id TEXT,
+    client_request_public_id TEXT, checkout_token_hash TEXT, checkout_expires_at TEXT,
     FOREIGN KEY (lead_id) REFERENCES leads(id)
 );
 CREATE TABLE IF NOT EXISTS market_validations (
@@ -196,9 +197,14 @@ _MIGRATION_COLUMNS = {
         "provider_message_id": "TEXT",
         "idempotency_key": "TEXT",
     },
-    "payments": {"provider_order_id": "TEXT"},
+    "payments": {
+        "provider_order_id": "TEXT",
+        "client_request_public_id": "TEXT",
+        "checkout_token_hash": "TEXT",
+        "checkout_expires_at": "TEXT",
+    },
     "webhook_events": {"payload_json": "TEXT"},
-    "consultation_submissions": {"lead_id": "INTEGER"},
+    "consultation_submissions": {"lead_id": "INTEGER REFERENCES leads(id)"},
 }
 
 _MIGRATION_INDEXES = (
@@ -211,6 +217,9 @@ _MIGRATION_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_email_events_provider_msg ON email_events(provider, provider_message_id)",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_email_events_idempotency ON email_events(idempotency_key) WHERE idempotency_key IS NOT NULL",
     "CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(provider, provider_order_id)",
+    "CREATE INDEX IF NOT EXISTS idx_payments_client_request ON payments(client_request_public_id, id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_checkout_token ON payments(checkout_token_hash) WHERE checkout_token_hash IS NOT NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_payments_one_checkout_per_request ON payments(client_request_public_id) WHERE client_request_public_id IS NOT NULL AND status NOT IN ('order_failed','cancelled')",
     "CREATE INDEX IF NOT EXISTS idx_consultations_email ON consultation_submissions(email)",
     "CREATE INDEX IF NOT EXISTS idx_consultations_updated ON consultation_submissions(updated_at)",
     "CREATE INDEX IF NOT EXISTS idx_outreach_events_outreach ON outreach_events(outreach_id)",
@@ -425,6 +434,49 @@ def _ensure_column(conn: Any, backend: str, table: str, column: str, definition:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
+def _ensure_consultation_lead_foreign_key(conn: Any, backend: str) -> None:
+    """Keep an existing PostgreSQL consultation lead_id column relationally constrained."""
+    if backend != "postgresql":
+        # SQLite creates the same foreign key for new tables through SCHEMA. SQLite
+        # cannot add a foreign key to an existing table without rebuilding it.
+        return
+
+    constraint = conn.execute(
+        """
+        SELECT EXISTS (
+            SELECT 1
+            FROM pg_constraint
+            WHERE conname = 'consultation_submissions_lead_id_fkey'
+              AND conrelid = 'public.consultation_submissions'::regclass
+              AND contype = 'f'
+        )
+        """
+    ).fetchone()
+    if constraint and bool(constraint[0]):
+        return
+
+    orphan_count = conn.execute(
+        """
+        SELECT COUNT(*)
+        FROM public.consultation_submissions AS c
+        LEFT JOIN public.leads AS l ON l.id = c.lead_id
+        WHERE c.lead_id IS NOT NULL AND l.id IS NULL
+        """
+    ).fetchone()
+    if orphan_count and int(orphan_count[0]) > 0:
+        raise DatabaseConfigurationError(
+            "Cannot add consultation lead foreign key: existing submissions reference missing leads"
+        )
+
+    conn.execute(
+        """
+        ALTER TABLE public.consultation_submissions
+        ADD CONSTRAINT consultation_submissions_lead_id_fkey
+        FOREIGN KEY (lead_id) REFERENCES public.leads(id)
+        """
+    )
+
+
 def init_db() -> None:
     """Apply additive schema changes in development; production uses Replit Publish."""
     backend = get_database_backend()
@@ -453,6 +505,12 @@ def init_db() -> None:
         for table, columns in _MIGRATION_COLUMNS.items():
             for column, definition in columns.items():
                 _ensure_column(conn, backend, table, column, definition)
+
+        # Production schema migration adds this foreign key. Ensure an existing
+        # Development PostgreSQL table also has it, so Replit's schema diff does
+        # not propose dropping the production constraint during Publish.
+        _ensure_consultation_lead_foreign_key(conn, backend)
+
         for statement in _MIGRATION_INDEXES:
             conn.execute(statement)
 
