@@ -164,11 +164,33 @@ def _parse_json_response(content: str) -> dict[str, Any] | None:
 
 
 def _model_sections(details: dict[str, Any]) -> dict[str, Any] | None:
-    token = getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None)
+    provider = getattr(settings, "ai_provider", "huggingface")
+    provider = provider.strip().lower() if isinstance(provider, str) else "huggingface"
+
+    if provider == "groq":
+        token = getattr(settings, "groq_api_key", None)
+        endpoint = getattr(
+            settings,
+            "groq_api_url",
+            "https://api.groq.com/openai/v1/chat/completions",
+        )
+        model = getattr(settings, "groq_model", "openai/gpt-oss-20b")
+    else:
+        token = getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None)
+        endpoint = getattr(
+            settings,
+            "hf_api_url",
+            "https://router.huggingface.co/v1/chat/completions",
+        )
+        model = getattr(
+            settings,
+            "hf_model",
+            "meta-llama/Llama-3.1-8B-Instruct:fastest",
+        )
+
     if not token:
         return None
-    endpoint = getattr(settings, "hf_api_url", "https://router.huggingface.co/v1/chat/completions")
-    model = getattr(settings, "hf_model", "meta-llama/Llama-3.1-8B-Instruct:fastest")
+
     user_details = {
         "business_name": _safe_text(details.get("business_name"), limit=160),
         "service": _safe_text(details.get("service"), limit=160),
@@ -189,11 +211,15 @@ def _model_sections(details: dict[str, Any]) -> dict[str, Any] | None:
         "are live. Do not invent awards, customer numbers, credentials, guarantees, prices, claims, testimonials, "
         "payment URLs, or contact details. Do not include scripts, HTML, CSS, URLs, or markdown. Return ONLY valid "
         "JSON with keys title, headline, subheadline, benefits (array of 3-5 strings), sections (array of 2-5 objects "
-        "each with heading and body), cta_text, and seo_description. Be concrete and mark the result as a draft.")
+        "each with heading and body), cta_text, and seo_description. Be concrete and mark the result as a draft."
+    )
     try:
         response = requests.post(
             endpoint,
-            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+            },
             json={
                 "model": model,
                 "messages": [
@@ -250,18 +276,34 @@ def _render_html(sections: dict[str, Any], details: dict[str, Any]) -> str:
 
 def generate_landing_page_draft(details: dict[str, Any]) -> tuple[str, str, str, str | None]:
     """Return (filename, html, source, diagnostic) for owner review; never deliver here."""
+    provider = getattr(settings, "ai_provider", "huggingface")
+    provider = provider.strip().lower() if isinstance(provider, str) else "huggingface"
     sections = _model_sections(details)
     if sections:
-        source = "huggingface"
+        source = provider
         diagnostic = None
     else:
         sections = _fallback_sections(details)
-        if getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None):
-            source = "template_fallback"
-            diagnostic = "Hugging Face did not return a valid response; deterministic draft generated instead."
+        source = "template_fallback"
+        if provider == "groq":
+            configured = bool(getattr(settings, "groq_api_key", None))
+            label = "Groq"
+            missing_key = "GROQ_API_KEY is not configured"
         else:
-            source = "template_fallback"
-            diagnostic = "HF_TOKEN is not configured; deterministic draft generated instead."
+            configured = bool(
+                getattr(settings, "hf_token", None)
+                or getattr(settings, "hf_api_key", None)
+            )
+            label = "Hugging Face"
+            missing_key = "HF_TOKEN is not configured"
+
+        if configured:
+            diagnostic = (
+                f"{label} did not return a valid response; "
+                "deterministic draft generated instead."
+            )
+        else:
+            diagnostic = f"{missing_key}; deterministic draft generated instead."
     service_key = _safe_text(details.get("service_key"), limit=80).upper() or "LANDING_PAGE"
     filename_map = {
         "LANDING_PAGE": "landing-page-draft.html",
