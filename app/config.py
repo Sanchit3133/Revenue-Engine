@@ -64,6 +64,10 @@ class Settings:
     hf_token: str | None
     hf_api_url: str
     hf_model: str
+    ai_provider: str
+    groq_api_key: str | None = field(repr=False)
+    groq_api_url: str
+    groq_model: str
 
     campaign_limit: int
     daily_limit: int
@@ -78,6 +82,10 @@ def load_settings() -> Settings:
     max_delay = _int_env("MAX_SEND_DELAY", 20)
     if max_delay < min_delay:
         raise ValueError("MAX_SEND_DELAY must be >= MIN_SEND_DELAY")
+
+    ai_provider = os.getenv("AI_PROVIDER", "huggingface").strip().lower()
+    if ai_provider not in {"huggingface", "groq"}:
+        raise ValueError("AI_PROVIDER must be huggingface or groq")
 
     provider = os.getenv("EMAIL_PROVIDER", "brevo").strip().lower()
     if provider not in SUPPORTED_EMAIL_PROVIDERS:
@@ -126,6 +134,10 @@ def load_settings() -> Settings:
         hf_token=_optional_env("HF_TOKEN") or _optional_env("HF_API_KEY"),
         hf_api_url=os.getenv("HF_API_URL", "https://router.huggingface.co/v1/chat/completions").strip(),
         hf_model=os.getenv("HF_MODEL", "meta-llama/Llama-3.1-8B-Instruct:fastest").strip(),
+        ai_provider=ai_provider,
+        groq_api_key=_optional_env("GROQ_API_KEY"),
+        groq_api_url=os.getenv("GROQ_API_URL", "https://api.groq.com/openai/v1/chat/completions").strip(),
+        groq_model=os.getenv("GROQ_MODEL", "openai/gpt-oss-20b").strip(),
         campaign_limit=_int_env("CAMPAIGN_LIMIT", 10),
         daily_limit=_int_env("DAILY_LIMIT", 25),
         min_send_delay=min_delay,

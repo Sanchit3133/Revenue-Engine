@@ -44,6 +44,65 @@ class TestAIDeliverableDraft(unittest.TestCase):
         self.assertNotIn("<script", html.lower())
         self.assertEqual(post.call_args.kwargs["headers"]["Authorization"], "Bearer test-token")
 
+    def test_groq_provider_uses_groq_credentials_endpoint_and_model(self):
+        model_content = {
+            "title": "Example Coaching",
+            "headline": "A clear learning plan",
+            "subheadline": "A draft for learners.",
+            "benefits": ["Practice", "Feedback", "Structure"],
+            "sections": [{"heading": "Approach", "body": "Practice with feedback."}],
+            "cta_text": "Learn more",
+            "seo_description": "A coaching draft.",
+        }
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "choices": [{"message": {"content": json.dumps(model_content)}}]
+        }
+        fake_settings = SimpleNamespace(
+            ai_provider="groq",
+            groq_api_key="groq-test-token",
+            groq_api_url="https://api.groq.com/openai/v1/chat/completions",
+            groq_model="openai/gpt-oss-20b",
+            hf_token="hf-token-should-not-be-used",
+        )
+        with patch("app.ai_client.settings", fake_settings), patch(
+            "app.ai_client.requests.post", return_value=response
+        ) as post:
+            _filename, html, source, diagnostic = generate_landing_page_draft({
+                "business_name": "Example Coaching",
+                "service": "IELTS coaching",
+            })
+
+        self.assertEqual(source, "groq")
+        self.assertIsNone(diagnostic)
+        self.assertIn("A clear learning plan", html)
+        self.assertEqual(
+            post.call_args.args[0],
+            "https://api.groq.com/openai/v1/chat/completions",
+        )
+        self.assertEqual(
+            post.call_args.kwargs["headers"]["Authorization"],
+            "Bearer groq-test-token",
+        )
+        self.assertEqual(post.call_args.kwargs["json"]["model"], "openai/gpt-oss-20b")
+
+    def test_missing_groq_key_uses_safe_template(self):
+        fake_settings = SimpleNamespace(
+            ai_provider="groq",
+            groq_api_key=None,
+        )
+        with patch("app.ai_client.settings", fake_settings), patch(
+            "app.ai_client.requests.post"
+        ) as post:
+            _filename, html, source, diagnostic = generate_landing_page_draft({
+                "business_name": "Example Coaching",
+            })
+
+        self.assertEqual(source, "template_fallback")
+        self.assertIn("GROQ_API_KEY is not configured", diagnostic)
+        self.assertIn("Draft for owner review", html)
+        post.assert_not_called()
+
     def test_invalid_model_json_falls_back_and_does_not_render_raw_model_html(self):
         response = Mock(status_code=200)
         response.json.return_value = {"choices": [{"message": {"content": "<script>alert(1)</script>"}}]}
