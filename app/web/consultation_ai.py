@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 import requests
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 BUSINESS_GROWTH_OPENING = (
@@ -57,7 +60,32 @@ def should_ask_business_context(
 def fallback_reply(
     message: str, data: dict[str, Any], history: list[dict[str, str]]
 ) -> str:
-    """Safe, non-AI reply used if the selected provider is unavailable."""
+    """Use recent conversation context when the AI provider is unavailable."""
+    last_assistant = next(
+        (
+            item.get("content", "")
+            for item in reversed(history)
+            if item.get("role") == "assistant"
+            and isinstance(item.get("content"), str)
+        ),
+        "",
+    )
+    normalized = " ".join(message.split()).strip()
+
+    # If the visitor gives a bare amount after a budget question, clarify it
+    # instead of losing the conversation and restarting from a generic prompt.
+    amount_only = re.fullmatch(
+        r"(?:(?:₹|\$|rs\.?\s*|inr\s*)?\d[\d,]*(?:\.\d{1,2})?"
+        r"(?:\s*(?:inr|rupees?|usd|dollars?))?)[.!]?",
+        normalized,
+        flags=re.IGNORECASE,
+    )
+    if amount_only and "budget" in last_assistant.lower():
+        return (
+            f"Thanks—when you say {normalized}, which currency do you mean, "
+            "and is that your daily, monthly, or total advertising budget?"
+        )
+
     if not data.get("problem_identified"):
         if not history:
             return BUSINESS_GROWTH_OPENING
@@ -85,6 +113,7 @@ def fallback_reply(
         "Any generated file remains a private draft until the owner manually reviews "
         "and approves delivery."
     )
+
 
 
 def provider_reply(
@@ -116,9 +145,16 @@ def provider_reply(
         )
         provider_name = "Hugging Face"
     else:
+        logger.warning(
+            "consultation_ai outcome=fallback reason=unsupported_provider"
+        )
         return None
 
     if not token:
+        logger.warning(
+            "consultation_ai provider=%s outcome=fallback reason=missing_credentials",
+            provider_name,
+        )
         return None
 
     context_keys = (
@@ -172,25 +208,88 @@ def provider_reply(
             },
             timeout=16,
         )
-        if response.status_code != 200:
+        status_code = response.status_code
+        if status_code != 200:
+            categories = {
+                400: "bad_request",
+                401: "unauthorized",
+                402: "payment_required",
+                403: "forbidden",
+                404: "model_or_endpoint_not_found",
+                408: "request_timeout",
+                429: "rate_limited",
+            }
+            category = categories.get(
+                status_code,
+                "provider_server_error" if status_code >= 500 else "http_error",
+            )
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback status=%s category=%s",
+                provider_name,
+                status_code,
+                category,
+            )
             return None
 
-        payload = response.json()
+        try:
+            payload = response.json()
+        except (ValueError, requests.RequestException):
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=invalid_json",
+                provider_name,
+            )
+            return None
+
         choices = payload.get("choices") if isinstance(payload, dict) else None
         if not isinstance(choices, list) or not choices:
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=invalid_response_schema",
+                provider_name,
+            )
             return None
+
         first = choices[0]
         if not isinstance(first, dict):
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=invalid_response_schema",
+                provider_name,
+            )
             return None
+
         content = first.get("message", {}).get("content", "")
         if not isinstance(content, str):
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=invalid_content_type",
+                provider_name,
+            )
             return None
 
         reply = " ".join(content.replace("\x00", "").split())[:1200]
-        return reply or None
-    except (
-        requests.RequestException, ValueError, TypeError, IndexError, AttributeError
-    ):
+        if not reply:
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=empty_content",
+                provider_name,
+            )
+            return None
+        return reply
+    except requests.Timeout:
+        logger.warning(
+            "consultation_ai provider=%s outcome=fallback category=timeout",
+            provider_name,
+        )
+        return None
+    except requests.RequestException as exc:
+        logger.warning(
+            "consultation_ai provider=%s outcome=fallback category=request_error error_type=%s",
+            provider_name,
+            type(exc).__name__,
+        )
+        return None
+    except (TypeError, IndexError, AttributeError):
+        logger.warning(
+            "consultation_ai provider=%s outcome=fallback category=malformed_response",
+            provider_name,
+        )
         return None
 
 
