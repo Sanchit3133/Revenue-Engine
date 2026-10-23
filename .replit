@@ -35,6 +35,10 @@ waitForPort = 5000
 path = "scripts/post-merge.sh"
 timeoutMs = 180000
 
+[packager.features]
+enabledForHosting = false
+
 [deployment]
+build = "PIP_USER=false python -m pip install -r requirements.txt"
 run = "gunicorn --bind 0.0.0.0:${PORT:-5000} --workers 1 --threads 4 --timeout 45 wsgi:app"
 deploymentTarget = "cloudrun"
