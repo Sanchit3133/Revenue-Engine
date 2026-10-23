@@ -134,5 +134,61 @@ class TestConsultationAIProvider(unittest.TestCase):
         post.assert_not_called()
 
 
+    def test_numeric_budget_answer_gets_contextual_fallback(self):
+        with patch(
+            "app.web.consultation_ai.provider_reply", return_value=None
+        ):
+            reply, using_ai = build_consultation_reply(
+                "500",
+                {
+                    "business_type": "IELTS coaching",
+                    "problem_identified": False,
+                    "requirements_collected": False,
+                    "budget_disclosed": False,
+                },
+                [
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "What is your current Meta-ad budget, who are you targeting, "
+                            "and how do you track leads?"
+                        ),
+                    }
+                ],
+            )
+
+        self.assertIn("500", reply)
+        self.assertIn("which currency", reply.lower())
+        self.assertIn("daily, monthly, or total", reply.lower())
+        self.assertFalse(using_ai)
+
+    def test_http_failure_logs_safe_status_without_secret_or_customer_text(self):
+        fake_settings = SimpleNamespace(
+            ai_provider="groq",
+            groq_api_key="test-secret-key",
+            groq_api_url="https://groq.example/chat/completions",
+            groq_model="test-model",
+        )
+        response = Mock(status_code=402)
+        customer_message = "PRIVATE_CUSTOMER_MESSAGE_123"
+
+        with patch("app.web.consultation_ai.settings", fake_settings), patch(
+            "app.web.consultation_ai.requests.post", return_value=response
+        ), self.assertLogs("app.web.consultation_ai", level="WARNING") as captured:
+            reply = provider_reply(
+                customer_message,
+                {"business_type": "IELTS coaching"},
+                [],
+            )
+
+        self.assertIsNone(reply)
+        log_output = "\\n".join(captured.output)
+        self.assertIn("provider=Groq", log_output)
+        self.assertIn("status=402", log_output)
+        self.assertIn("payment_required", log_output)
+        self.assertNotIn("test-secret-key", log_output)
+        self.assertNotIn(customer_message, log_output)
+
+
 if __name__ == "__main__":
     unittest.main()
