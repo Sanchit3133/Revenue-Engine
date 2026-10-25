@@ -32,6 +32,8 @@ jobs:
           python-version: "3.11"
       - name: Install dependencies
         run: python -m pip install --disable-pip-version-check -r requirements-worker.txt
+      - name: Build production container
+        run: docker build --tag revenue-engine:ci .
       - name: Compile Python files
         run: python -m compileall -q app scripts tests
       - name: Run unit tests
