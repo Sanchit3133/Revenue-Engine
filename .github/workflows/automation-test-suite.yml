@@ -3,6 +3,8 @@ name: Revenue Engine automation test suite
 on:
   push:
     branches:
+      - main
+      - deployment/replit-full-engine-20261015
       - feat/automated-overture-outreach-20261017
       - fix/healthz-deployment-check-20261018
   pull_request:

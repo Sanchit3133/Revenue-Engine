@@ -190,5 +190,57 @@ class TestConsultationAIProvider(unittest.TestCase):
         self.assertNotIn(customer_message, log_output)
 
 
+
+    def test_truncated_provider_output_is_rejected(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "choices": [{
+                "message": {"content": "The recommended next steps are"},
+                "finish_reason": "length",
+            }]
+        }
+        fake_settings = SimpleNamespace(
+            ai_provider="groq",
+            groq_api_key="test-key",
+            groq_api_url="https://groq.example/chat/completions",
+            groq_model="test-model",
+        )
+        with patch("app.web.consultation_ai.settings", fake_settings), patch(
+            "app.web.consultation_ai.requests.post", return_value=response
+        ) as post:
+            reply = provider_reply(
+                "How can we improve follow-up?",
+                {"business_type": "coaching centre"},
+                [],
+            )
+
+        self.assertIsNone(reply)
+        self.assertEqual(post.call_args.kwargs["json"]["max_tokens"], 700)
+
+    def test_reply_ending_with_open_parenthesis_is_rejected(self):
+        response = Mock(status_code=200)
+        response.json.return_value = {
+            "choices": [{
+                "message": {"content": "Set up scheduled reminders ("},
+                "finish_reason": "stop",
+            }]
+        }
+        fake_settings = SimpleNamespace(
+            ai_provider="groq",
+            groq_api_key="test-key",
+            groq_api_url="https://groq.example/chat/completions",
+            groq_model="test-model",
+        )
+        with patch("app.web.consultation_ai.settings", fake_settings), patch(
+            "app.web.consultation_ai.requests.post", return_value=response
+        ):
+            reply = provider_reply(
+                "What should the follow-up plan include?",
+                {"business_type": "coaching centre"},
+                [],
+            )
+
+        self.assertIsNone(reply)
+
 if __name__ == "__main__":
     unittest.main()
