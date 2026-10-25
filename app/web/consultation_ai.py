@@ -203,7 +203,7 @@ def provider_reply(
                 "model": model,
                 "messages": messages,
                 "temperature": 0.25,
-                "max_tokens": 280,
+                "max_tokens": 700,
                 "stream": False,
             },
             timeout=16,
@@ -256,6 +256,17 @@ def provider_reply(
             )
             return None
 
+        finish_reason = first.get("finish_reason")
+        if isinstance(finish_reason, str) and finish_reason.lower() in {
+            "length",
+            "max_tokens",
+        }:
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=truncated_output",
+                provider_name,
+            )
+            return None
+
         content = first.get("message", {}).get("content", "")
         if not isinstance(content, str):
             logger.warning(
@@ -265,6 +276,13 @@ def provider_reply(
             return None
 
         reply = " ".join(content.replace("\x00", "").split())[:1200]
+        if reply.endswith(("(", "[", "{")):
+            logger.warning(
+                "consultation_ai provider=%s outcome=fallback category=incomplete_output",
+                provider_name,
+            )
+            return None
+
         if not reply:
             logger.warning(
                 "consultation_ai provider=%s outcome=fallback category=empty_content",
