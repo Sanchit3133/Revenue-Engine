@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from app import database
 
@@ -39,7 +39,7 @@ class TestProductionSchemaMigrationGuard(unittest.TestCase):
             connect.assert_not_called()
 
     def test_explicit_production_migration_runs_only_with_postgresql(self):
-        fake_connection = Mock()
+        fake_connection = MagicMock()
         fake_connection.__enter__.return_value = fake_connection
         fake_connection.execute.return_value.fetchone.side_effect = [(False,), (0,)]
 
