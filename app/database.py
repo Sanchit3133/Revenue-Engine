@@ -477,12 +477,23 @@ def _ensure_consultation_lead_foreign_key(conn: Any, backend: str) -> None:
     )
 
 
-def init_db() -> None:
-    """Apply additive schema changes in development; production uses Replit Publish."""
+def init_db(*, allow_production: bool = False) -> None:
+    """Apply repeatable additive schema changes with explicit production approval."""
     backend = get_database_backend()
-    if getattr(settings, "environment", "development") == "production":
+    environment = getattr(settings, "environment", "development")
+
+    if environment == "production":
+        if not allow_production:
+            raise DatabaseConfigurationError(
+                "Production schema changes require the explicit --allow-production release command"
+            )
+        if backend != "postgresql":
+            raise DatabaseConfigurationError(
+                "Approved production schema changes require PostgreSQL"
+            )
+    elif allow_production:
         raise DatabaseConfigurationError(
-            "Production schema changes are applied through Replit Publish, not runtime migrations"
+            "--allow-production is valid only when ENVIRONMENT=production"
         )
 
     with connect() as conn:
