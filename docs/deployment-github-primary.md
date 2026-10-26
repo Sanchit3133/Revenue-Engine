@@ -1,54 +1,70 @@
-# GitHub-primary production deployment
+# GitHub-primary deployment with the Heroku Student Developer Pack
 
-This repository is the source of truth for Revenue Engine. Replit may be used to edit and preview work, but approved changes should be transferred into a reviewed GitHub pull request. Production is deployed from `main` only after CI passes.
+Revenue Engine's GitHub repository is the source of truth. Replit remains the development/preview workspace and temporary fallback. The public marketing site remains in `Sanchit3133/sanchit-agarwal-website`; the Flask application runs on a separate persistent host.
 
-## Important architecture boundary
+## Why Heroku is the first choice
 
-GitHub stores the source, versions, runs the tests, and can coordinate deployments. GitHub Pages is static hosting; it cannot run this Flask server. The Flask service and its PostgreSQL database must run on a persistent application host.
+The current GitHub Student Developer Pack lists Heroku platform credits of **US$13 per month for 24 months** (US$312 total, issued monthly and not as an upfront balance). The published Heroku prices currently list a Basic web dyno at US$7/month and Essential-0 PostgreSQL at US$5/month: approximately US$12/month before tax or extras. This leaves only about US$1 per month of headroom under the student credit, so do not enable extra paid products or third-party add-ons without checking billing first.
 
-The website repository (`Sanchit3133/sanchit-agarwal-website`) remains the public marketing site. Once the production backend hostname is verified, the website can link its consultation/client portal buttons to that host. Do not embed secrets or private client data in the static website.
+- Choose a **Basic dyno**, not Eco, for the customer-facing app. Eco dynos can sleep after inactivity.
+- Choose **Heroku Postgres Essential-0** for the initial pilot. It is a small 1 GB database with a 20-connection limit and a published expected uptime of 99.5% per month; it is not a high-availability tier.
+- The offer requires an eligible student (18+ under Heroku's offer terms) and a valid credit or debit card on file. Any bill beyond the monthly US$13 credit is charged to the card. If you cannot accept that billing risk, do not activate paid resources yet.
+- The credits expire after 24 months and do not roll forward. Budget for paid hosting before the credit period ends.
 
-## Recommended low-maintenance deployment path
+Offer and terms: https://www.heroku.com/github-students/ and https://help.heroku.com/Z3RHNRHD/how-does-the-heroku-for-github-students-program-work
 
-1. Use DigitalOcean App Platform with this repository connected at branch `main`, root directory, and the root `Dockerfile`. Enable automatic deploy on push. App Platform supports Git-repository deployment; this Dockerfile creates a non-root Python container.
-2. Attach a **production managed PostgreSQL database**, not an ephemeral or development database. Configure the application with the database's private connection string as the secret `DATABASE_URL`; set `DATABASE_BACKEND=postgresql` and `ENVIRONMENT=production`.
-3. Configure runtime secrets in the hosting dashboard, not in GitHub files. At minimum set `FLASK_SECRET_KEY`, `OWNER_DASHBOARD_PASSWORD`, `DATABASE_URL`, and the selected AI provider settings. Add Brevo, Razorpay, Google, and other provider keys only when the related integration is being enabled.
-4. Add a health check for `/healthz`. The health check must pass against the new PostgreSQL database before routing the public website to the new backend.
-5. Configure a dedicated app subdomain (proposed: `app.sanchit-agarwal.me`) in the host and DNS. Use the target host's exact DNS instructions; do not change the website's existing root-domain records.
-6. Enable daily backups and test a restore procedure. A single-node managed database is not the same as a highly available cluster; keep a separate protected export for critical records.
-7. Only after data migration, smoke tests, and webhook/payment checks pass should the website's consultation and client-request links change to the new hostname. Keep Replit available during a rollback window.
+## GitHub automatic deployment
 
-## Cost note (verify current prices before creating resources)
+The repository includes `requirements.txt`, a `Procfile`, and `.python-version` for Heroku's Python buildpack. A portable Dockerfile is also included for other hosts; the GitHub Deploys path on Heroku should be configured as the Python buildpack deployment.
 
-DigitalOcean's current public pricing lists App Platform shared/fixed containers from $5/month and a single-node managed PostgreSQL database from $15/month. That is about $20/month before taxes or extras at the smallest container size; a 1 GiB container is listed at $10/month, making that pairing about $25/month. A 512 MiB app may be too constrained as the app's load grows.
+1. In GitHub Student Developer Pack, open the Heroku offer and apply it to the correct personal Heroku account. Check the Billing page to confirm that the student credit is actually active before creating paid resources.
+2. Create a personal Heroku app (not a Team app; the student credit cannot be applied to a Heroku Team account).
+3. Add **Heroku Postgres Essential-0** under the app's Resources tab. Heroku attaches its connection string as `DATABASE_URL`; do not paste it into source control or public chat.
+4. Before the first deploy, set these Config Vars in the Heroku dashboard:
+   - `ENVIRONMENT=production`
+   - `DATABASE_BACKEND=postgresql`
+   - `FLASK_SECRET_KEY` — a strong unique random value
+   - `OWNER_DASHBOARD_PASSWORD` — a strong unique password
+   - `AI_PROVIDER=groq`
+   - `GROQ_API_KEY`, `GROQ_API_URL=https://api.groq.com/openai/v1/chat/completions`, and `GROQ_MODEL=openai/gpt-oss-20b`
+   - `LANDING_PAGE_URL=https://sanchit-agarwal.me/#services`
+   Add Brevo, Razorpay, Google Places and other keys only when the corresponding functionality is deliberately enabled. Keep outreach sending disabled during deployment tests.
+5. In Heroku → Deploy, connect GitHub repository `Sanchit3133/Revenue-Engine`, select branch `main`, enable automatic deploys, and enable **Wait for CI to pass before deploy** if Heroku recognizes the GitHub Actions status checks.
+6. Perform the initial manual deploy after the configuration and database attachment are in place. Confirm the release phase succeeds, then confirm `/healthz` reports a healthy PostgreSQL backend.
+7. Keep automatic deploys attached to `main`, not a feature branch. Changes should flow through pull requests and the existing GitHub Actions tests before the production release.
 
-If an existing DigitalOcean Droplet/database from earlier setup is already available, check it before creating new resources to avoid duplicate charges. A small Droplet can cost less but requires you to operate PostgreSQL, OS patches, TLS, firewall, backup, restore, and deployment automation yourself.
+GitHub integration instructions: https://devcenter.heroku.com/articles/github-integration
 
-## Production data migration is a separate gate
+## Database migrations and preservation
 
-Do not assume Replit preview and published production use the same database. Before cutover:
+The `release:` process in the Procfile explicitly runs `python -m scripts.init_db --allow-production` before the web release. That command is allowed only when `ENVIRONMENT=production` and the selected backend is PostgreSQL. The same database layer still refuses production schema mutation by default. The schema setup is additive/repeatable and runs in the release phase, not in a web worker or during each request.
 
-- Confirm the authoritative Replit production database and take a restorable backup.
-- Record the counts of leads, client requests, consultation submissions/messages, payments, webhook events, suppression rows, and audit records.
-- Use a reviewed export/import runbook that preserves IDs, foreign keys, payment references, consent timestamps, and audit history.
-- Verify destination counts and sample rows before opening public traffic.
-- Never commit database dumps, API keys, customer emails, or environment files to Git.
+**Do not direct real customer traffic to the new app until data migration is complete.** Replit's preview and published app may have different PostgreSQL databases. Before cutover:
 
-The existing `scripts.init_db` intentionally refuses to run in `ENVIRONMENT=production`; do not bypass that guard or run an unreviewed schema migration against production. A first-time host provisioning and data migration procedure must be explicitly prepared for the selected host/database before cutover.
+1. Identify the authoritative Replit published database and confirm a restorable backup exists.
+2. Record baseline row counts for leads, outreach, suppressions, payments, client requests, consultation submissions/messages, webhook events, and audit records.
+3. Prepare a reviewed PostgreSQL data transfer into the Heroku database that preserves IDs, relationships, payment references, consent records, suppressions, and audit history. Do not assume restoring a full dump over the newly initialized target schema is safe; resolve schema differences before transfer.
+4. Compare row counts and sample records, then verify login, consultation, client requests, admin routes, and payment/webhook handling in the new app.
+5. Keep the original Replit deployment and database unchanged during the validation window. Do not delete data or overwrite production to make migration easier.
 
-## Website and customer-delivery plan
+Heroku Postgres supports backups. Configure a daily logical backup schedule, verify the schedule and at least one successful backup, and keep an additional protected copy for critical data. The Essential tier has limited retention and no database high availability; see https://devcenter.heroku.com/articles/heroku-postgres-backups.
 
-- Public marketing site: `sanchit-agarwal.me`, deployed from `sanchit-agarwal-website` using GitHub Pages.
-- Revenue Engine customer portal: Flask routes for consultation and client requests at the production app subdomain.
-- Owner panel: remains behind the app's existing owner authentication. Before production, change the owner password, use a strong unique `FLASK_SECRET_KEY`, and verify cookie/TLS settings.
-- Customer-specific deliverables: after the GitHub integration is implemented, the owner can authorize the app via a GitHub App/OAuth flow and approve each repository/release operation from the owner panel. Never collect a GitHub password or store a personal access token in source code. The app should request only the repository permissions it needs and record an audit event for each action.
-- Static customer sites may be deployed to GitHub Pages; customer sites needing server-side code or a database require a runtime host. Store each project's repository, target URL, status, commit, and approval trail in Revenue Engine. Only send customer delivery messages after the owner has verified the deployment URL and approved delivery.
+## Website connection and domain
 
-## Release checklist
+The marketing site stays on GitHub Pages at `https://sanchit-agarwal.me`. After the Heroku app is healthy and data has been migrated, configure a dedicated application hostname such as `app.sanchit-agarwal.me` using the exact custom-domain/DNS records Heroku gives you. Do not replace the root domain's existing GitHub Pages DNS records.
 
-1. Pull request to `main` passes GitHub Actions.
-2. Deployment host is configured with secrets and persistent PostgreSQL.
-3. Database backup and reviewed migration complete.
-4. `/healthz` reports healthy PostgreSQL; consultation, client request, owner login, file generation/review, and payment/webhook test paths have been exercised safely.
-5. Public website links are updated to the verified app hostname.
-6. Replit remains the temporary fallback until the permanent deployment and restore process have both been verified.
+Then update the main website's consultation and client-request links to the verified app hostname, run end-to-end tests, and only then direct customers to the new endpoint. Keep the Replit URL as an operator-only fallback during the rollback window.
+
+## Owner-authenticated customer delivery
+
+The owner dashboard continues to handle approvals; no customer should be told a deliverable is ready until its URL and content have been checked. The future GitHub delivery integration should use GitHub App/OAuth authorization with the minimum required permissions, rather than asking for a GitHub password or hard-coding a personal access token. Each repository creation, deploy, and approval should have an audit record. Static customer sites can use GitHub Pages; projects needing Python/Node server code or a database need a runtime host.
+
+## Cost and security guardrails
+
+- The $13 credit is monthly, not an upfront $312 balance. Any overage is charged to the card on file.
+- Keep the app to one Basic dyno and one Essential-0 database initially. Disable review apps or extra dynos unless you confirm the incremental cost is within the credit.
+- Do not add a Key-Value Store, paid third-party add-ons, or extra worker dynos for this first release.
+- Never commit `.env`, database exports, API credentials, client data, or payment secrets.
+- Configure owner authentication, HTTPS, backups, suppression and opt-out handling before enabling real outreach or production payments.
+- A valid `/healthz` response is one check, not proof that payment, email, or database migration paths have passed their acceptance tests.
+- Retain Replit as fallback until production data and the restore procedure are proven on the new host.
