@@ -32,8 +32,24 @@ class TestDatabaseMigrations(unittest.TestCase):
                     self.assertEqual(tuple(outreach), (1, "FAILED", "Kept subject"))
                     self.assertTrue({"provider", "provider_message_id", "last_error", "retry_of_outreach_id"}.issubset(columns))
                     lead_columns = {row["name"] for row in migrated.execute("PRAGMA table_info(leads)")}
-                    self.assertIn("country", lead_columns)
-                    self.assertEqual(migrated.execute("SELECT country FROM leads WHERE id=1").fetchone()[0], "India")
+                    self.assertTrue({
+                        "country",
+                        "email_marketing_consent",
+                        "email_marketing_consent_at",
+                        "email_marketing_consent_source",
+                        "email_marketing_consent_evidence",
+                    }.issubset(lead_columns))
+                    lead = migrated.execute(
+                        """SELECT country, email_marketing_consent,
+                                  email_marketing_consent_at,
+                                  email_marketing_consent_source,
+                                  email_marketing_consent_evidence
+                           FROM leads WHERE id=1"""
+                    ).fetchone()
+                    self.assertEqual(
+                        tuple(lead),
+                        ("India", 0, None, None, None),
+                    )
                     self.assertEqual(migrated.execute("SELECT COUNT(*) FROM consultation_submissions").fetchone()[0], 0)
                     self.assertEqual(migrated.execute("SELECT COUNT(*) FROM webhook_events").fetchone()[0], 0)
 
