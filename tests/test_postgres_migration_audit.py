@@ -1,9 +1,23 @@
 import unittest
 
-from scripts.audit_postgres_migration import analyze_rows
+from scripts.audit_postgres_migration import _ordered_column_sets, analyze_rows
 
 
 class TestPostgresMigrationRowAudit(unittest.TestCase):
+    def test_scalar_key_metadata_is_grouped_in_ordinal_order(self):
+        rows = [
+            ("idx_b", "second_col", 2),
+            ("idx_a", "id", 1),
+            ("idx_b", "first_col", 1),
+        ]
+        self.assertEqual(
+            _ordered_column_sets(rows),
+            {
+                "idx_a": ("id",),
+                "idx_b": ("first_col", "second_col"),
+            },
+        )
+
     def test_identical_rows_with_same_primary_key_are_counted(self):
         source = [{"id": 1, "public_id": "a", "content": "hello"}]
         target = [{"id": 1, "public_id": "a", "content": "hello"}]
