@@ -28,6 +28,10 @@ CREATE TABLE IF NOT EXISTS leads (
     business_name TEXT NOT NULL, address TEXT, phone TEXT, website TEXT,
     email TEXT, country TEXT NOT NULL DEFAULT 'India', qualification TEXT,
     score INTEGER DEFAULT 0, signal TEXT, notes TEXT,
+    email_marketing_consent INTEGER NOT NULL DEFAULT 0,
+    email_marketing_consent_at TEXT,
+    email_marketing_consent_source TEXT,
+    email_marketing_consent_evidence TEXT,
     state TEXT NOT NULL DEFAULT 'DISCOVERED',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -184,7 +188,13 @@ CREATE INDEX IF NOT EXISTS idx_reply_lead ON reply_events(lead_id, received_at);
 """
 
 _MIGRATION_COLUMNS = {
-    "leads": {"country": "TEXT NOT NULL DEFAULT 'India'"},
+    "leads": {
+        "country": "TEXT NOT NULL DEFAULT 'India'",
+        "email_marketing_consent": "INTEGER NOT NULL DEFAULT 0",
+        "email_marketing_consent_at": "TEXT",
+        "email_marketing_consent_source": "TEXT",
+        "email_marketing_consent_evidence": "TEXT",
+    },
     "outreach": {
         "provider": "TEXT",
         "provider_message_id": "TEXT",
