@@ -354,7 +354,16 @@ def main() -> int:
                 name for name in src_cols if name in dst_cols
             ]
             if not set(pk_src).issubset(comparable_columns):
+                source_missing_pk_columns = sorted(set(pk_src) - set(src_cols))
+                target_missing_pk_columns = sorted(set(pk_src) - set(dst_cols))
                 schema_issues.append(f"{table}: primary key columns are not comparable")
+                print(
+                    f"  Primary-key diagnostic: detected={pk_src!r}; "
+                    f"source-missing={source_missing_pk_columns or 'none'}; "
+                    f"Heroku-missing={target_missing_pk_columns or 'none'}; "
+                    f"source-column-count={len(src_cols)}; "
+                    f"Heroku-column-count={len(dst_cols)}"
+                )
                 continue
 
             source_rows = _read_rows(source, table, comparable_columns, pk_src)
