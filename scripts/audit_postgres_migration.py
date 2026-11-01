@@ -122,45 +122,16 @@ def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
 
             cur.execute(
                 """
-                SELECT
-                    array_agg(kcu.column_name ORDER BY kcu.ordinal_position),
-                    ccu.table_name,
-                    array_agg(ccu.column_name ORDER BY ccu.ordinal_position),
-                    rc.update_rule,
-                    rc.delete_rule
-                FROM information_schema.table_constraints AS tc
-                JOIN information_schema.key_column_usage AS kcu
-                  ON kcu.constraint_catalog = tc.constraint_catalog
-                 AND kcu.constraint_schema = tc.constraint_schema
-                 AND kcu.constraint_name = tc.constraint_name
-                 AND kcu.table_schema = tc.table_schema
-                 AND kcu.table_name = tc.table_name
-                JOIN information_schema.constraint_column_usage AS ccu
-                  ON ccu.constraint_catalog = tc.constraint_catalog
-                 AND ccu.constraint_schema = tc.constraint_schema
-                 AND ccu.constraint_name = tc.constraint_name
-                JOIN information_schema.referential_constraints AS rc
-                  ON rc.constraint_catalog = tc.constraint_catalog
-                 AND rc.constraint_schema = tc.constraint_schema
-                 AND rc.constraint_name = tc.constraint_name
-                WHERE tc.constraint_schema = 'public'
-                  AND tc.table_name = %s
-                  AND tc.constraint_type = 'FOREIGN KEY'
-                GROUP BY ccu.table_name, rc.update_rule, rc.delete_rule,
-                         tc.constraint_name
+                SELECT pg_get_constraintdef(oid)
+                FROM pg_constraint
+                WHERE conrelid = to_regclass(%s)
+                  AND contype = 'f'
+                ORDER BY pg_get_constraintdef(oid)
                 """,
-                (table,),
+                (f"public.{table}",),
             )
-            foreign_keys = {
-                (
-                    tuple(row[0] or ()),
-                    row[1],
-                    tuple(row[2] or ()),
-                    row[3],
-                    row[4],
-                )
-                for row in cur.fetchall()
-            }
+            foreign_keys = {row[0] for row in cur.fetchall()}
+
 
             cur.execute(
                 """
