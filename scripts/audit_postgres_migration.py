@@ -35,6 +35,18 @@ def _database_identity(conn: psycopg.Connection) -> tuple[str, str, str]:
     return str(row[0]), str(row[1]), str(row[2])
 
 
+
+
+def _ordered_column_sets(rows: list[tuple[str, str, int]]) -> dict[str, tuple[str, ...]]:
+    """Group (key_name, column_name, ordinal) rows into ordered column tuples."""
+    grouped: dict[str, list[tuple[int, str]]] = {}
+    for key_name, column_name, ordinal in rows:
+        grouped.setdefault(str(key_name), []).append((int(ordinal), str(column_name)))
+    return {
+        key_name: tuple(column for _ordinal, column in sorted(columns))
+        for key_name, columns in grouped.items()
+    }
+
 def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
     result: dict[str, dict[str, Any]] = {}
     with conn.cursor() as cur:
@@ -66,10 +78,13 @@ def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
                 for row in cur.fetchall()
             }
 
+            # Read key metadata as scalar rows. Some PostgreSQL drivers/providers
+            # expose array_agg()/ARRAY values as strings (for example "{id}");
+            # iterating those strings would incorrectly produce character columns.
             cur.execute(
                 """
                 SELECT tc.constraint_type, tc.constraint_name,
-                       array_agg(kcu.column_name ORDER BY kcu.ordinal_position)
+                       kcu.column_name, kcu.ordinal_position
                 FROM information_schema.table_constraints AS tc
                 JOIN information_schema.key_column_usage AS kcu
                   ON kcu.constraint_catalog = tc.constraint_catalog
@@ -80,69 +95,63 @@ def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
                 WHERE tc.constraint_schema = 'public'
                   AND tc.table_name = %s
                   AND tc.constraint_type IN ('PRIMARY KEY', 'UNIQUE')
-                GROUP BY tc.constraint_type, tc.constraint_name
+                ORDER BY tc.constraint_type, tc.constraint_name,
+                         kcu.ordinal_position
                 """,
                 (table,),
             )
+            constraint_rows = cur.fetchall()
             primary_key: tuple[str, ...] = ()
             unique_keys: list[tuple[str, ...]] = []
-            for kind, _name, key_columns in cur.fetchall():
-                key = tuple(key_columns)
+            grouped_constraints: dict[tuple[str, str], list[tuple[int, str]]] = {}
+            for kind, constraint_name, column_name, ordinal in constraint_rows:
+                grouped_constraints.setdefault(
+                    (kind, constraint_name), []
+                ).append((int(ordinal), column_name))
+
+            for (kind, _constraint_name), key_columns in grouped_constraints.items():
+                key = tuple(column for _ordinal, column in sorted(key_columns))
                 if kind == "PRIMARY KEY":
                     primary_key = key
-                elif key:
+                elif key and key not in unique_keys:
                     unique_keys.append(key)
 
-            # Fallback to PostgreSQL's catalog for primary-key discovery.
-            if not primary_key:
-                cur.execute(
-                    """
-                    SELECT ARRAY(
-                        SELECT a.attname
-                        FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, position)
-                        JOIN pg_attribute AS a
-                          ON a.attrelid = t.oid AND a.attnum = k.attnum
-                        WHERE k.attnum > 0
-                        ORDER BY k.position
-                    )
-                    FROM pg_index AS i
-                    JOIN pg_class AS t ON t.oid = i.indrelid
-                    JOIN pg_namespace AS n ON n.oid = t.relnamespace
-                    WHERE n.nspname = 'public'
-                      AND t.relname = %s
-                      AND i.indisprimary
-                    """,
-                    (table,),
-                )
-                primary_row = cur.fetchone()
-                if primary_row and primary_row[0]:
-                    primary_key = tuple(primary_row[0])
-
-            # Include simple, non-partial unique indexes as well as constraints.
+            # PostgreSQL catalogs provide a reliable scalar fallback and also
+            # cover primary/unique indexes not represented as table constraints.
             cur.execute(
                 """
-                SELECT ARRAY(
-                    SELECT a.attname
-                    FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, position)
-                    JOIN pg_attribute AS a
-                      ON a.attrelid = t.oid AND a.attnum = k.attnum
-                    WHERE k.attnum > 0
-                    ORDER BY k.position
-                )
+                SELECT i.indisprimary, i.indexrelid::regclass::text,
+                       a.attname, k.ordinality
                 FROM pg_index AS i
                 JOIN pg_class AS t ON t.oid = i.indrelid
                 JOIN pg_namespace AS n ON n.oid = t.relnamespace
+                CROSS JOIN LATERAL
+                    unnest(i.indkey) WITH ORDINALITY AS k(attnum, ordinality)
+                JOIN pg_attribute AS a
+                  ON a.attrelid = t.oid AND a.attnum = k.attnum
                 WHERE n.nspname = 'public'
                   AND t.relname = %s
                   AND i.indisunique
                   AND i.indpred IS NULL
                   AND i.indexprs IS NULL
+                  AND k.attnum > 0
+                  AND k.ordinality <= i.indnkeyatts
+                ORDER BY i.indexrelid, k.ordinality
                 """,
                 (table,),
             )
-            for row in cur.fetchall():
-                key = tuple(row[0] or ())
-                if key and key != primary_key and key not in unique_keys:
+            index_rows = cur.fetchall()
+            grouped_indexes = _ordered_column_sets([
+                (index_name, column_name, ordinal)
+                for _is_primary, index_name, column_name, ordinal in index_rows
+            ])
+            for index_name, key in grouped_indexes.items():
+                matching = next(
+                    row for row in index_rows if row[1] == index_name
+                )
+                if matching[0]:
+                    primary_key = key
+                elif key and key != primary_key and key not in unique_keys:
                     unique_keys.append(key)
 
             cur.execute(
