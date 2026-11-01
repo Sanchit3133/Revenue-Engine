@@ -120,10 +120,70 @@ def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
                 if key and key != primary_key and key not in unique_keys:
                     unique_keys.append(key)
 
+            cur.execute(
+                """
+                SELECT
+                    array_agg(kcu.column_name ORDER BY kcu.ordinal_position),
+                    ccu.table_name,
+                    array_agg(ccu.column_name ORDER BY ccu.ordinal_position),
+                    rc.update_rule,
+                    rc.delete_rule
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
+                  ON kcu.constraint_catalog = tc.constraint_catalog
+                 AND kcu.constraint_schema = tc.constraint_schema
+                 AND kcu.constraint_name = tc.constraint_name
+                 AND kcu.table_schema = tc.table_schema
+                 AND kcu.table_name = tc.table_name
+                JOIN information_schema.constraint_column_usage AS ccu
+                  ON ccu.constraint_catalog = tc.constraint_catalog
+                 AND ccu.constraint_schema = tc.constraint_schema
+                 AND ccu.constraint_name = tc.constraint_name
+                JOIN information_schema.referential_constraints AS rc
+                  ON rc.constraint_catalog = tc.constraint_catalog
+                 AND rc.constraint_schema = tc.constraint_schema
+                 AND rc.constraint_name = tc.constraint_name
+                WHERE tc.constraint_schema = 'public'
+                  AND tc.table_name = %s
+                  AND tc.constraint_type = 'FOREIGN KEY'
+                GROUP BY ccu.table_name, rc.update_rule, rc.delete_rule,
+                         tc.constraint_name
+                """,
+                (table,),
+            )
+            foreign_keys = {
+                (
+                    tuple(row[0] or ()),
+                    row[1],
+                    tuple(row[2] or ()),
+                    row[3],
+                    row[4],
+                )
+                for row in cur.fetchall()
+            }
+
+            cur.execute(
+                """
+                SELECT pg_get_indexdef(i.indexrelid)
+                FROM pg_index AS i
+                JOIN pg_class AS t ON t.oid = i.indrelid
+                JOIN pg_namespace AS n ON n.oid = t.relnamespace
+                WHERE n.nspname = 'public'
+                  AND t.relname = %s
+                  AND i.indisunique
+                  AND (i.indpred IS NOT NULL OR i.indexprs IS NOT NULL)
+                ORDER BY pg_get_indexdef(i.indexrelid)
+                """,
+                (table,),
+            )
+            special_unique_indexes = tuple(row[0] for row in cur.fetchall())
+
             result[table] = {
                 "columns": columns,
                 "primary_key": primary_key,
                 "unique_keys": unique_keys,
+                "foreign_keys": foreign_keys,
+                "special_unique_indexes": special_unique_indexes,
             }
     return result
 
@@ -216,7 +276,9 @@ def main() -> int:
 
         source_identity = _database_identity(source)
         target_identity = _database_identity(target)
-        if source_identity == target_identity:
+        if (source_identity[0], source_identity[2]) == (
+            target_identity[0], target_identity[2]
+        ):
             print("STOP: Source and destination identify as the same database.")
             return 2
 
@@ -255,7 +317,15 @@ def main() -> int:
             target_only = sorted(set(dst_cols) - set(src_cols))
             type_differences = sorted(
                 name for name in set(src_cols) & set(dst_cols)
-                if src_cols[name][:2] != dst_cols[name][:2]
+                if src_cols[name][:3] != dst_cols[name][:3]
+            )
+            source_unique = set(src["unique_keys"])
+            target_unique = set(dst["unique_keys"])
+            missing_destination_unique = sorted(source_unique - target_unique)
+            extra_destination_unique = sorted(target_unique - source_unique)
+            foreign_key_differences = src["foreign_keys"] != dst["foreign_keys"]
+            special_index_differences = (
+                src["special_unique_indexes"] != dst["special_unique_indexes"]
             )
 
             if source_only or target_only or type_differences:
@@ -264,7 +334,15 @@ def main() -> int:
                 if target_only:
                     schema_issues.append(f"{table}: destination-only columns {target_only}")
                 if type_differences:
-                    schema_issues.append(f"{table}: column type differences {type_differences}")
+                    schema_issues.append(f"{table}: column type/nullability differences {type_differences}")
+            if missing_destination_unique or extra_destination_unique:
+                schema_issues.append(
+                    f"{table}: unique-key definitions differ between databases"
+                )
+            if foreign_key_differences:
+                schema_issues.append(f"{table}: foreign-key definitions differ")
+            if special_index_differences:
+                schema_issues.append(f"{table}: partial/expression unique indexes differ")
 
             pk_src = src["primary_key"]
             pk_dst = dst["primary_key"]
@@ -293,6 +371,12 @@ def main() -> int:
             )
             row_conflicts += summary["different_same_pk"]
             unique_conflicts += summary["unique_conflict_rows"]
+            if source_rows and (
+                src["special_unique_indexes"] or dst["special_unique_indexes"]
+            ):
+                schema_issues.append(
+                    f"{table}: rows require specialized partial/expression unique-index collision checks"
+                )
             source_only_total += summary["source_only_pk"]
             identical_total += summary["identical_same_pk"]
 
@@ -305,11 +389,19 @@ def main() -> int:
                 f"Heroku-only={summary['target_only_pk']}, "
                 f"unique-conflicts={summary['unique_conflict_rows']}"
             )
-            if source_only or target_only or type_differences:
+            if (
+                source_only or target_only or type_differences
+                or missing_destination_unique or extra_destination_unique
+                or foreign_key_differences or special_index_differences
+            ):
                 print(
                     f"  Schema differences: source-only columns={source_only or 'none'}; "
                     f"Heroku-only columns={target_only or 'none'}; "
-                    f"type differences={type_differences or 'none'}"
+                    f"type/nullability differences={type_differences or 'none'}; "
+                    f"missing unique keys={missing_destination_unique or 'none'}; "
+                    f"extra unique keys={extra_destination_unique or 'none'}; "
+                    f"foreign-key differences={foreign_key_differences}; "
+                    f"partial/expression unique-index differences={special_index_differences}"
                 )
 
         print("\n=== SUMMARY ===")
