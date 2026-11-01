@@ -93,6 +93,31 @@ def _schema(conn: psycopg.Connection) -> dict[str, dict[str, Any]]:
                 elif key:
                     unique_keys.append(key)
 
+            # Fallback to PostgreSQL's catalog for primary-key discovery.
+            if not primary_key:
+                cur.execute(
+                    """
+                    SELECT ARRAY(
+                        SELECT a.attname
+                        FROM unnest(i.indkey) WITH ORDINALITY AS k(attnum, position)
+                        JOIN pg_attribute AS a
+                          ON a.attrelid = t.oid AND a.attnum = k.attnum
+                        WHERE k.attnum > 0
+                        ORDER BY k.position
+                    )
+                    FROM pg_index AS i
+                    JOIN pg_class AS t ON t.oid = i.indrelid
+                    JOIN pg_namespace AS n ON n.oid = t.relnamespace
+                    WHERE n.nspname = 'public'
+                      AND t.relname = %s
+                      AND i.indisprimary
+                    """,
+                    (table,),
+                )
+                primary_row = cur.fetchone()
+                if primary_row and primary_row[0]:
+                    primary_key = tuple(primary_row[0])
+
             # Include simple, non-partial unique indexes as well as constraints.
             cur.execute(
                 """
@@ -269,6 +294,8 @@ def main() -> int:
         unique_conflicts = 0
         source_only_total = 0
         identical_total = 0
+        tables_compared = 0
+        tables_skipped_without_primary_key = 0
 
         for table in sorted(set(source_schema) | set(target_schema)):
             src = source_schema.get(table)
@@ -318,6 +345,7 @@ def main() -> int:
             pk_src = src["primary_key"]
             pk_dst = dst["primary_key"]
             if not pk_src or pk_src != pk_dst:
+                tables_skipped_without_primary_key += 1
                 schema_issues.append(f"{table}: primary key missing or different")
                 print(f"\n{table}: STOP — primary key missing or different")
                 continue
@@ -340,6 +368,7 @@ def main() -> int:
                     if set(key).issubset(comparable_columns)
                 ],
             )
+            tables_compared += 1
             row_conflicts += summary["different_same_pk"]
             unique_conflicts += summary["unique_conflict_rows"]
             if source_rows and (
@@ -380,7 +409,13 @@ def main() -> int:
         print("Source-only rows to consider:", source_only_total)
         print("Different rows sharing a primary key:", row_conflicts)
         print("Source rows colliding with Heroku unique keys:", unique_conflicts)
+        print("Tables actually compared:", tables_compared)
+        print("Tables skipped for missing primary key:", tables_skipped_without_primary_key)
         print("Schema issues:", len(schema_issues))
+        if schema_issues:
+            print("Schema issue details:")
+            for issue in schema_issues:
+                print("  -", issue)
         if schema_issues:
             print("SCHEMA REVIEW REQUIRED. No data was changed.")
         elif row_conflicts or unique_conflicts:
