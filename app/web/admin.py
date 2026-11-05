@@ -197,7 +197,16 @@ def owner_dashboard():
         audit=audit,
         module_runs=module_runs,
         email_provider=getattr(settings, "email_provider", "unknown"),
-        hf_configured=bool(getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None)),
+        ai_provider_label=(
+            "Groq"
+            if str(getattr(settings, "ai_provider", "huggingface") or "huggingface").strip().lower() == "groq"
+            else "Hugging Face"
+        ),
+        ai_configured=(
+            bool(getattr(settings, "groq_api_key", None))
+            if str(getattr(settings, "ai_provider", "huggingface") or "huggingface").strip().lower() == "groq"
+            else bool(getattr(settings, "hf_token", None) or getattr(settings, "hf_api_key", None))
+        ),
         notification_configured=bool(getattr(settings, "owner_notification_email", None) and getattr(settings, "brevo_api_key", None) and getattr(settings, "brevo_sender", None)),
         brevo_webhook_configured=bool(getattr(settings, "brevo_webhook_token", None)),
         razorpay_api_configured=bool(getattr(settings, "razorpay_key_id", None) and getattr(settings, "razorpay_key_secret", None)),
