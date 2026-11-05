@@ -171,7 +171,9 @@ class TestOwnerApprovalPaymentGate(unittest.TestCase):
         self.admin_settings = SimpleNamespace(
             owner_dashboard_password="test-owner-password", email_provider="brevo",
             brevo_api_key="fake", brevo_sender="sender@example.com", brevo_reply_to=None,
-            google_api_key=None, hf_token=None, hf_api_key=None, owner_notification_email="owner@example.com",
+            google_api_key=None, hf_token=None, hf_api_key=None,
+            ai_provider="groq", groq_api_key="test-groq-key",
+            owner_notification_email="owner@example.com",
             daily_limit=10, domain_cooldown=3600, sendgrid_api_key=None, sendgrid_sender=None,
         )
         self.admin_patch = patch("app.web.admin.settings", self.admin_settings)
@@ -201,6 +203,19 @@ class TestOwnerApprovalPaymentGate(unittest.TestCase):
         dashboard = self.client.get("/owner")
         self.assertEqual(dashboard.status_code, 200)
         return _csrf(dashboard)
+
+    def test_dashboard_reports_selected_groq_provider_configuration(self):
+        self._login_and_dashboard_token()
+
+        response = self.client.get("/owner")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(b"Groq configured", response.data)
+        self.assertNotIn(b"Hugging Face configured", response.data)
+
+        self.admin_settings.groq_api_key = None
+        response_without_key = self.client.get("/owner")
+        self.assertIn(b"Groq not configured", response_without_key.data)
+        self.assertIn(b"template fallback", response_without_key.data)
 
     def test_arbitrary_payment_reference_cannot_approve_file(self):
         token = self._login_and_dashboard_token()
